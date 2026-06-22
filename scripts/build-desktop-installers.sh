@@ -67,6 +67,27 @@ copy_dist_artifact() {
   cp "$artifact" "$INSTALLER_DIR/"
 }
 
+clean_macos_output() {
+  local electron_arch="$1"
+  local app_dir="mac"
+
+  if [ "$electron_arch" = "arm64" ]; then
+    app_dir="mac-arm64"
+  fi
+
+  rm -rf "$DESKTOP_DIR/dist/$app_dir"
+  rm -f "$DESKTOP_DIR/dist/Kite-$DESKTOP_VERSION-mac-$electron_arch.dmg"
+  rm -f "$DESKTOP_DIR/dist/Kite-$DESKTOP_VERSION-mac-$electron_arch.dmg.blockmap"
+  rm -f "$INSTALLER_DIR/Kite-$DESKTOP_VERSION-mac-$electron_arch.dmg"
+}
+
+clean_windows_output() {
+  rm -rf "$DESKTOP_DIR/dist/win-unpacked"
+  rm -f "$DESKTOP_DIR/dist/Kite-$DESKTOP_VERSION-win-x64.exe"
+  rm -f "$DESKTOP_DIR/dist/Kite-$DESKTOP_VERSION-win-x64.exe.blockmap"
+  rm -f "$INSTALLER_DIR/Kite-$DESKTOP_VERSION-win-x64.exe"
+}
+
 run_electron_builder() {
   local label="$1"
   shift
@@ -92,6 +113,7 @@ package_macos() {
   local electron_arch="$1"
   local goarch="$2"
 
+  clean_macos_output "$electron_arch"
   build_backend darwin "$goarch" "$RESOURCE_DIR/kite"
   echo "==> Packaging macOS $electron_arch DMG"
   run_electron_builder "macOS $electron_arch" --mac dmg "--$electron_arch"
@@ -100,6 +122,7 @@ package_macos() {
 
 package_windows() {
   ensure_windows_icon
+  clean_windows_output
   build_backend windows amd64 "$RESOURCE_DIR/kite.exe"
   echo "==> Packaging Windows x64 installer"
   run_electron_builder "Windows x64" --win nsis --x64
