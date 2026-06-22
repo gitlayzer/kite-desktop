@@ -7,6 +7,9 @@ import {
 } from '@tanstack/react-table'
 
 import { getClusterScopedStorageKey } from '@/lib/current-cluster'
+import { useCluster } from '@/hooks/use-cluster'
+
+const RESOURCE_TABLE_MAX_PAGE_SIZE = 100
 
 interface UseResourceTableStateOptions {
   resourceName: string
@@ -32,6 +35,9 @@ export function useResourceTableState({
   clusterScope,
   defaultHiddenColumns,
 }: UseResourceTableStateOptions) {
+  const { currentClusterData } = useCluster()
+  const defaultNamespace = currentClusterData?.defaultNamespace || 'default'
+  const requiresNamespace = false
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() =>
     readStoredJSON(
@@ -71,19 +77,30 @@ export function useResourceTableState({
     const savedPageSize = sessionStorage.getItem(
       getClusterScopedStorageKey(`-${resourceName}-pageSize`)
     )
+    const parsedPageSize = savedPageSize ? Number(savedPageSize) : 20
+    const pageSize =
+      Number.isFinite(parsedPageSize) && parsedPageSize > 0
+        ? Math.min(parsedPageSize, RESOURCE_TABLE_MAX_PAGE_SIZE)
+        : 20
     return {
       pageIndex: 0,
-      pageSize: savedPageSize ? Number(savedPageSize) : 20,
+      pageSize,
     }
   })
-  const [refreshInterval, setRefreshInterval] = useState(5000)
+  const [refreshInterval, setRefreshInterval] = useState(30000)
   const [selectedNamespace, setSelectedNamespace] = useState<
     string | undefined
   >(() => {
     const storedNamespace = localStorage.getItem(
       getClusterScopedStorageKey('selectedNamespace')
     )
-    return clusterScope ? undefined : storedNamespace || 'default'
+    if (
+      requiresNamespace &&
+      (storedNamespace === '_all' || storedNamespace?.includes(','))
+    ) {
+      return defaultNamespace
+    }
+    return clusterScope ? undefined : storedNamespace || defaultNamespace
   })
   const [useSSE, setUseSSE] = useState(false)
 
@@ -101,8 +118,19 @@ export function useResourceTableState({
     const storedNamespace = localStorage.getItem(
       getClusterScopedStorageKey('selectedNamespace')
     )
-    setSelectedNamespace(storedNamespace || 'default')
-  }, [clusterScope, selectedNamespace])
+    setSelectedNamespace(storedNamespace || defaultNamespace)
+  }, [clusterScope, defaultNamespace, selectedNamespace])
+
+  useEffect(() => {
+    if (clusterScope) {
+      return
+    }
+    const storageKey = getClusterScopedStorageKey('selectedNamespace')
+    const storedNamespace = localStorage.getItem(storageKey)
+    if (!storedNamespace && selectedNamespace !== defaultNamespace) {
+      setSelectedNamespace(defaultNamespace)
+    }
+  }, [clusterScope, defaultNamespace, selectedNamespace])
 
   useEffect(() => {
     const storageKey = getClusterScopedStorageKey(
@@ -146,12 +174,22 @@ export function useResourceTableState({
     setPagination((prev) => ({ ...prev, pageIndex: 0 }))
   }, [columnFilters, searchQuery])
 
-  const handleNamespaceChange = useCallback((value: string) => {
-    localStorage.setItem(getClusterScopedStorageKey('selectedNamespace'), value)
-    setSelectedNamespace(value)
-    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
-    setSearchQuery('')
-  }, [])
+  const handleNamespaceChange = useCallback(
+    (value: string) => {
+      const safeValue =
+        requiresNamespace && (value === '_all' || value.includes(','))
+          ? defaultNamespace
+          : value
+      localStorage.setItem(
+        getClusterScopedStorageKey('selectedNamespace'),
+        safeValue
+      )
+      setSelectedNamespace(safeValue)
+      setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+      setSearchQuery('')
+    },
+    [defaultNamespace, requiresNamespace]
+  )
 
   const handleUseSSEChange = useCallback((pressed: boolean) => {
     setUseSSE(pressed)
@@ -160,7 +198,7 @@ export function useResourceTableState({
         return 0
       }
       if (current === 0) {
-        return 5000
+        return 30000
       }
       return current
     })
@@ -192,6 +230,7 @@ export function useResourceTableState({
     setRefreshInterval,
     selectedNamespace,
     effectiveNamespace,
+    requiresNamespace,
     useSSE,
     handleNamespaceChange,
     handleUseSSEChange,

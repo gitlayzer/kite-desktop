@@ -22,6 +22,8 @@ type registry interface {
 	GetTags(ctx context.Context) ([]ImageTagInfo, error)
 }
 
+var registryHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 type dockerRegistry struct {
 	repo string
 }
@@ -29,7 +31,7 @@ type dockerRegistry struct {
 func (d dockerRegistry) GetTags(ctx context.Context) ([]ImageTagInfo, error) {
 	url := fmt.Sprintf("https://hub.docker.com/v2/repositories/%s/tags?page_size=10&ordering=last_updated", d.repo)
 	klog.V(1).Infof("fetching tags from Docker Hub: %s", url)
-	resp, err := http.Get(url)
+	resp, err := doRegistryRequest(ctx, url)
 	if err != nil {
 		klog.Errorf("failed to get tags from Docker Hub: %v", err)
 		return nil, nil
@@ -64,7 +66,7 @@ type containerRegistryV2 struct {
 
 func (d containerRegistryV2) GetTags(ctx context.Context) ([]ImageTagInfo, error) {
 	url := fmt.Sprintf("https://%s/v2/%s/tags/list", d.baseURL, d.repo)
-	resp, err := http.Get(url)
+	resp, err := doRegistryRequest(ctx, url)
 	if err != nil {
 		klog.Errorf("failed to get tags from registry %s: %v", d.baseURL, err)
 		return nil, nil
@@ -91,6 +93,21 @@ func (d containerRegistryV2) GetTags(ctx context.Context) ([]ImageTagInfo, error
 		tags = append(tags, ImageTagInfo{Name: t})
 	}
 	return tags, nil
+}
+
+func doRegistryRequest(ctx context.Context, url string) (*http.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := registryHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func getRegistry(image string) registry {

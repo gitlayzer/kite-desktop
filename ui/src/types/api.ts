@@ -579,6 +579,13 @@ export interface OverviewData {
   totalNamespaces: number
   totalServices: number
   prometheusEnabled: boolean
+  nodeStatsPartial?: boolean
+  nodeCountPartial?: boolean
+  podStatsPartial?: boolean
+  podCountPartial?: boolean
+  namespaceCountPartial?: boolean
+  serviceCountPartial?: boolean
+  resourcePartial?: boolean
   resource: {
     cpu: {
       allocatable: number
@@ -634,6 +641,7 @@ export interface Cluster {
   enabled: boolean
   inCluster: boolean
   isDefault: boolean
+  defaultNamespace?: string
   createdAt: string
   updatedAt: string
   prometheusURL?: string

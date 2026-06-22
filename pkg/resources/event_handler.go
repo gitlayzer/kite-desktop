@@ -25,6 +25,11 @@ func (h *EventHandler) ListResourceEvents(c *gin.Context) {
 	name := c.Query("name")
 	namespace := c.Query("namespace")
 	resource := c.Query("resource")
+	limit, _, err := normalizeListLimit(c.Query("limit"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	cs := c.MustGet("cluster").(*cluster.ClientSet)
 	target, err := GetResource(c, resource, namespace, name)
 
@@ -43,6 +48,8 @@ func (h *EventHandler) ListResourceEvents(c *gin.Context) {
 		FieldSelector: "involvedObject.kind=" + objType.GetKind() +
 			",involvedObject.name=" + name +
 			",involvedObject.uid=" + string(obj.GetUID()),
+		Limit:    limit,
+		Continue: c.Query("continue"),
 	})
 
 	if err != nil {

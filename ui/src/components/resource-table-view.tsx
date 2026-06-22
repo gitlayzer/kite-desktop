@@ -41,6 +41,9 @@ interface ResourceTableViewProps<T> {
   setPagination: React.Dispatch<React.SetStateAction<PaginationState>>
   shrinkFirstColumn?: boolean
   showAllPageSize?: boolean
+  hasNextPage?: boolean
+  onNextPage?: () => void
+  onPreviousPage?: () => void
 }
 
 export function ResourceTableView<T>({
@@ -61,6 +64,9 @@ export function ResourceTableView<T>({
   setPagination,
   shrinkFirstColumn = true,
   showAllPageSize = true,
+  hasNextPage = false,
+  onNextPage,
+  onPreviousPage,
 }: ResourceTableViewProps<T>) {
   const renderRows = () => {
     const rows = table.getRowModel().rows
@@ -276,23 +282,35 @@ export function ResourceTableView<T>({
             <div className="flex items-center justify-center text-sm font-medium">
               Page {pagination.pageIndex + 1} of {table.getPageCount() || 1}
             </div>
-            <div className="flex items-center justify-end gap-2 sm:justify-start lg:ml-0">
-              <Button
-                variant="outline"
-                className="size-8"
-                size="icon"
-                onClick={() => table.previousPage()}
-                disabled={!table.getCanPreviousPage()}
-              >
-                <span className="sr-only">Go to previous page</span>←
-              </Button>
-              <Button
-                variant="outline"
-                className="size-8"
-                size="icon"
-                onClick={() => table.nextPage()}
-                disabled={!table.getCanNextPage()}
-              >
+	            <div className="flex items-center justify-end gap-2 sm:justify-start lg:ml-0">
+	              <Button
+	                variant="outline"
+	                className="size-8"
+	                size="icon"
+	                onClick={() => {
+	                  if (table.getCanPreviousPage()) {
+	                    table.previousPage()
+	                    return
+	                  }
+	                  onPreviousPage?.()
+	                }}
+	                disabled={!table.getCanPreviousPage() && !onPreviousPage}
+	              >
+	                <span className="sr-only">Go to previous page</span>←
+	              </Button>
+	              <Button
+	                variant="outline"
+	                className="size-8"
+	                size="icon"
+	                onClick={() => {
+	                  if (table.getCanNextPage()) {
+	                    table.nextPage()
+	                    return
+	                  }
+	                  onNextPage?.()
+	                }}
+	                disabled={!table.getCanNextPage() && !hasNextPage}
+	              >
                 <span className="sr-only">Go to next page</span>→
               </Button>
             </div>

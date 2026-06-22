@@ -24,13 +24,39 @@ import (
 	gatewayapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
+const relatedResourceLimit = 100
+
+func appendRelatedLimited(items []common.RelatedResource, item common.RelatedResource) []common.RelatedResource {
+	if len(items) >= relatedResourceLimit {
+		return items
+	}
+	return append(items, item)
+}
+
+func appendRelatedLimitNotice(items []common.RelatedResource, truncated bool) []common.RelatedResource {
+	if !truncated {
+		return items
+	}
+	return append(items, common.RelatedResource{
+		Type: "notice",
+		Name: fmt.Sprintf("相关资源过多，仅显示前 %d 个。请通过资源列表搜索、标签或命名空间进一步缩小范围。", relatedResourceLimit),
+	})
+}
+
+func capRelatedResult(items []common.RelatedResource) []common.RelatedResource {
+	if len(items) <= relatedResourceLimit {
+		return items
+	}
+	return appendRelatedLimitNotice(items[:relatedResourceLimit], true)
+}
+
 func discoverServices(ctx context.Context, k8sClient *kube.K8sClient, namespace string, selector *metav1.LabelSelector) ([]common.RelatedResource, error) {
 	if selector == nil || selector.MatchLabels == nil {
 		return []common.RelatedResource{}, nil
 	}
 
 	var serviceList corev1.ServiceList
-	if err := k8sClient.List(ctx, &serviceList, client.InNamespace(namespace)); err != nil {
+	if err := k8sClient.List(ctx, &serviceList, client.InNamespace(namespace), client.Limit(maxListLimit)); err != nil {
 		return nil, fmt.Errorf("failed to list services: %w", err)
 	}
 
@@ -39,7 +65,7 @@ func discoverServices(ctx context.Context, k8sClient *kube.K8sClient, namespace 
 		if service.Spec.Selector != nil {
 			serviceSelector := labels.SelectorFromSet(service.Spec.Selector)
 			if serviceSelector.Matches(labels.Set(selector.MatchLabels)) {
-				relatedServices = append(relatedServices, common.RelatedResource{
+				relatedServices = appendRelatedLimited(relatedServices, common.RelatedResource{
 					Type:      string(common.Services),
 					Namespace: service.Namespace,
 					Name:      service.Name,
@@ -48,7 +74,7 @@ func discoverServices(ctx context.Context, k8sClient *kube.K8sClient, namespace 
 		}
 	}
 
-	return relatedServices, nil
+	return appendRelatedLimitNotice(relatedServices, serviceList.GetContinue() != "" || serviceList.GetRemainingItemCount() != nil || len(relatedServices) >= relatedResourceLimit), nil
 }
 
 func discoverIngressServices(namespace string, ingress *v1.Ingress) []common.RelatedResource {
@@ -205,13 +231,13 @@ func discoveryWorkloads(ctx context.Context, k8sClient *kube.K8sClient, namespac
 	var daemonSetList appsv1.DaemonSetList
 
 	g.Go(func() error {
-		return k8sClient.List(gctx, &deploymentList, client.InNamespace(namespace))
+		return k8sClient.List(gctx, &deploymentList, client.InNamespace(namespace), client.Limit(maxListLimit))
 	})
 	g.Go(func() error {
-		return k8sClient.List(gctx, &statefulSetList, client.InNamespace(namespace))
+		return k8sClient.List(gctx, &statefulSetList, client.InNamespace(namespace), client.Limit(maxListLimit))
 	})
 	g.Go(func() error {
-		return k8sClient.List(gctx, &daemonSetList, client.InNamespace(namespace))
+		return k8sClient.List(gctx, &daemonSetList, client.InNamespace(namespace), client.Limit(maxListLimit))
 	})
 
 	if err := g.Wait(); err != nil {
@@ -222,7 +248,7 @@ func discoveryWorkloads(ctx context.Context, k8sClient *kube.K8sClient, namespac
 	var related []common.RelatedResource
 	for _, deployment := range deploymentList.Items {
 		if checkInUsedConfigs(&deployment.Spec.Template, name, resourceType) {
-			related = append(related, common.RelatedResource{
+			related = appendRelatedLimited(related, common.RelatedResource{
 				Type:      string(common.Deployments),
 				Name:      deployment.Name,
 				Namespace: deployment.Namespace,
@@ -231,7 +257,7 @@ func discoveryWorkloads(ctx context.Context, k8sClient *kube.K8sClient, namespac
 	}
 	for _, statefulSet := range statefulSetList.Items {
 		if checkInUsedConfigs(&statefulSet.Spec.Template, name, resourceType) {
-			related = append(related, common.RelatedResource{
+			related = appendRelatedLimited(related, common.RelatedResource{
 				Type:      string(common.StatefulSets),
 				Name:      statefulSet.Name,
 				Namespace: statefulSet.Namespace,
@@ -240,14 +266,15 @@ func discoveryWorkloads(ctx context.Context, k8sClient *kube.K8sClient, namespac
 	}
 	for _, daemonSet := range daemonSetList.Items {
 		if checkInUsedConfigs(&daemonSet.Spec.Template, name, resourceType) {
-			related = append(related, common.RelatedResource{
+			related = appendRelatedLimited(related, common.RelatedResource{
 				Type:      string(common.DaemonSets),
 				Name:      daemonSet.Name,
 				Namespace: daemonSet.Namespace,
 			})
 		}
 	}
-	return related, nil
+	truncated := deploymentList.GetContinue() != "" || statefulSetList.GetContinue() != "" || daemonSetList.GetContinue() != "" || len(related) >= relatedResourceLimit
+	return appendRelatedLimitNotice(related, truncated), nil
 }
 
 func discoverPodsByService(ctx context.Context, k8sClient *kube.K8sClient, service *corev1.Service) []common.RelatedResource {
@@ -262,7 +289,7 @@ func discoverPodsByService(ctx context.Context, k8sClient *kube.K8sClient, servi
 	for _, subset := range endpoints.Subsets {
 		for _, addr := range subset.Addresses {
 			if addr.TargetRef != nil && addr.TargetRef.Kind == "Pod" {
-				relatedPods = append(relatedPods, common.RelatedResource{
+				relatedPods = appendRelatedLimited(relatedPods, common.RelatedResource{
 					Type:      string(common.Pods),
 					Namespace: addr.TargetRef.Namespace,
 					Name:      addr.TargetRef.Name,
@@ -270,7 +297,7 @@ func discoverPodsByService(ctx context.Context, k8sClient *kube.K8sClient, servi
 			}
 		}
 	}
-	return relatedPods
+	return appendRelatedLimitNotice(relatedPods, len(relatedPods) >= relatedResourceLimit)
 }
 
 func discoverPodsByPodDisruptionBudget(ctx context.Context, k8sClient *kube.K8sClient, namespace string, selector *metav1.LabelSelector) ([]common.RelatedResource, error) {
@@ -284,20 +311,20 @@ func discoverPodsByPodDisruptionBudget(ctx context.Context, k8sClient *kube.K8sC
 	}
 
 	var podList corev1.PodList
-	if err := k8sClient.List(ctx, &podList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: labelSelector}); err != nil {
+	if err := k8sClient.List(ctx, &podList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: labelSelector}, client.Limit(relatedResourceLimit)); err != nil {
 		return nil, err
 	}
 
 	relatedPods := make([]common.RelatedResource, 0, len(podList.Items))
 	for _, pod := range podList.Items {
-		relatedPods = append(relatedPods, common.RelatedResource{
+		relatedPods = appendRelatedLimited(relatedPods, common.RelatedResource{
 			Type:      "pods",
 			Namespace: pod.Namespace,
 			Name:      pod.Name,
 		})
 	}
 
-	return relatedPods, nil
+	return appendRelatedLimitNotice(relatedPods, podList.GetContinue() != "" || podList.GetRemainingItemCount() != nil), nil
 }
 
 func discoverPodsByPodDisruptionBudgetV1Beta1(ctx context.Context, k8sClient *kube.K8sClient, namespace string, selector *metav1.LabelSelector) ([]common.RelatedResource, error) {
@@ -313,16 +340,18 @@ func discoverPodDisruptionBudgetsByPod(ctx context.Context, k8sClient *kube.K8sC
 	}
 
 	var pdbList policyv1.PodDisruptionBudgetList
-	if err := k8sClient.List(ctx, &pdbList, client.InNamespace(namespace)); err == nil {
-		return matchingPodDisruptionBudgetsByPod(pdbList.Items, podLabels), nil
+	if err := k8sClient.List(ctx, &pdbList, client.InNamespace(namespace), client.Limit(maxListLimit)); err == nil {
+		related := matchingPodDisruptionBudgetsByPod(pdbList.Items, podLabels)
+		return appendRelatedLimitNotice(related, pdbList.GetContinue() != "" || pdbList.GetRemainingItemCount() != nil || len(related) >= relatedResourceLimit), nil
 	}
 
 	var betaPDBList policyv1beta1.PodDisruptionBudgetList
-	if err := k8sClient.List(ctx, &betaPDBList, client.InNamespace(namespace)); err != nil {
+	if err := k8sClient.List(ctx, &betaPDBList, client.InNamespace(namespace), client.Limit(maxListLimit)); err != nil {
 		return nil, err
 	}
 
-	return matchingBetaPodDisruptionBudgetsByPod(betaPDBList.Items, podLabels), nil
+	related := matchingBetaPodDisruptionBudgetsByPod(betaPDBList.Items, podLabels)
+	return appendRelatedLimitNotice(related, betaPDBList.GetContinue() != "" || betaPDBList.GetRemainingItemCount() != nil || len(related) >= relatedResourceLimit), nil
 }
 
 func matchingPodDisruptionBudgetsByPod(items []policyv1.PodDisruptionBudget, podLabels map[string]string) []common.RelatedResource {
@@ -357,7 +386,7 @@ func appendMatchingPodDisruptionBudget(relatedPDBs []common.RelatedResource, nam
 		return relatedPDBs
 	}
 
-	return append(relatedPDBs, common.RelatedResource{
+	return appendRelatedLimited(relatedPDBs, common.RelatedResource{
 		Type:      "poddisruptionbudgets",
 		Namespace: namespace,
 		Name:      name,
@@ -497,7 +526,7 @@ func GetRelatedResources(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, capRelatedResult(result))
 }
 
 func getHTTPRouteRelatedResouces(res *gatewayapiv1.HTTPRoute, namespace string) []common.RelatedResource {

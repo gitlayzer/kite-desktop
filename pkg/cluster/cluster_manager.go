@@ -1,11 +1,13 @@
 package cluster
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +29,7 @@ type ClientSet struct {
 	PromClient *prometheus.Client
 
 	DiscoveredPrometheusURL string
+	DefaultNamespace        string
 	config                  string
 	prometheusURL           string
 }
@@ -61,14 +64,16 @@ func createClientSetFromConfig(name, content, prometheusURL string) (*ClientSet,
 		return nil, err
 	}
 	cs.config = content
+	cs.DefaultNamespace = defaultNamespaceFromKubeconfig(content)
 
 	return cs, nil
 }
 
 func newClientSet(name string, k8sConfig *rest.Config, prometheusURL string) (*ClientSet, error) {
 	cs := &ClientSet{
-		Name:          name,
-		prometheusURL: prometheusURL,
+		Name:             name,
+		DefaultNamespace: "default",
+		prometheusURL:    prometheusURL,
 	}
 	var err error
 	cs.K8sClient, err = kube.NewClient(k8sConfig)
@@ -107,6 +112,27 @@ func newClientSet(name string, k8sConfig *rest.Config, prometheusURL string) (*C
 	}
 	klog.Infof("Loaded K8s client for cluster: %s, version: %s", name, cs.Version)
 	return cs, nil
+}
+
+func defaultNamespaceFromKubeconfig(content string) string {
+	kubeconfig, err := clientcmd.Load([]byte(content))
+	if err != nil {
+		return "default"
+	}
+	contextName := kubeconfig.CurrentContext
+	if contextName == "" && len(kubeconfig.Contexts) == 1 {
+		for name := range kubeconfig.Contexts {
+			contextName = name
+		}
+	}
+	if contextName == "" {
+		return "default"
+	}
+	context := kubeconfig.Contexts[contextName]
+	if context == nil || strings.TrimSpace(context.Namespace) == "" {
+		return "default"
+	}
+	return context.Namespace
 }
 
 func isClusterLocalURL(urlStr string) bool {
@@ -196,23 +222,39 @@ func (cm *ClusterManager) GetClientSet(clusterName string) (*ClientSet, error) {
 }
 
 func ImportClustersFromKubeconfig(kubeconfig *clientcmdapi.Config) int64 {
-	if len(kubeconfig.Contexts) == 0 {
+	existingIdentities := existingClusterIdentities()
+	contextNames := importableKubeconfigContextNames(kubeconfig, existingIdentities)
+	if len(contextNames) == 0 {
 		return 0
 	}
 
 	importedCount := 0
-	for contextName, context := range kubeconfig.Contexts {
+	for _, contextName := range contextNames {
+		context := kubeconfig.Contexts[contextName]
+		if context == nil {
+			continue
+		}
+		clusterConfig := kubeconfig.Clusters[context.Cluster]
+		if clusterConfig == nil {
+			continue
+		}
+
+		authInfos := map[string]*clientcmdapi.AuthInfo{}
+		if context.AuthInfo != "" {
+			if authInfo := kubeconfig.AuthInfos[context.AuthInfo]; authInfo != nil {
+				authInfos[context.AuthInfo] = authInfo
+			}
+		}
+
 		config := clientcmdapi.NewConfig()
 		config.Contexts = map[string]*clientcmdapi.Context{
 			contextName: context,
 		}
 		config.CurrentContext = contextName
 		config.Clusters = map[string]*clientcmdapi.Cluster{
-			context.Cluster: kubeconfig.Clusters[context.Cluster],
+			context.Cluster: clusterConfig,
 		}
-		config.AuthInfos = map[string]*clientcmdapi.AuthInfo{
-			context.AuthInfo: kubeconfig.AuthInfos[context.AuthInfo],
-		}
+		config.AuthInfos = authInfos
 		configStr, err := clientcmd.Write(*config)
 		if err != nil {
 			continue
@@ -220,7 +262,8 @@ func ImportClustersFromKubeconfig(kubeconfig *clientcmdapi.Config) int64 {
 		cluster := model.Cluster{
 			Name:      contextName,
 			Config:    model.SecretString(configStr),
-			IsDefault: contextName == kubeconfig.CurrentContext,
+			IsDefault: contextName == kubeconfig.CurrentContext || (kubeconfig.CurrentContext == "" && importedCount == 0),
+			Enable:    true,
 		}
 		if _, err := model.GetClusterByName(contextName); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -234,6 +277,105 @@ func ImportClustersFromKubeconfig(kubeconfig *clientcmdapi.Config) int64 {
 		}
 	}
 	return int64(importedCount)
+}
+
+func importableKubeconfigContextNames(kubeconfig *clientcmdapi.Config, initialSeen ...map[string]struct{}) []string {
+	if kubeconfig == nil || len(kubeconfig.Contexts) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(kubeconfig.Contexts))
+	for name := range kubeconfig.Contexts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	if kubeconfig.CurrentContext != "" {
+		for index, name := range names {
+			if name == kubeconfig.CurrentContext {
+				names = append([]string{name}, append(names[:index], names[index+1:]...)...)
+				break
+			}
+		}
+	}
+
+	seen := make(map[string]struct{}, len(names))
+	if len(initialSeen) > 0 {
+		maps.Copy(seen, initialSeen[0])
+	}
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		context := kubeconfig.Contexts[name]
+		if context == nil {
+			continue
+		}
+		clusterConfig := kubeconfig.Clusters[context.Cluster]
+		if clusterConfig == nil {
+			continue
+		}
+		key := kubeconfigClusterIdentity(context.Cluster, clusterConfig)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, name)
+	}
+
+	return result
+}
+
+func existingClusterIdentities() map[string]struct{} {
+	if model.DB == nil {
+		return nil
+	}
+
+	clusters, err := model.ListClusters()
+	if err != nil || len(clusters) == 0 {
+		return nil
+	}
+
+	identities := make(map[string]struct{}, len(clusters))
+	for _, cluster := range clusters {
+		if cluster == nil || cluster.InCluster || strings.TrimSpace(string(cluster.Config)) == "" {
+			continue
+		}
+		kubeconfig, err := clientcmd.Load([]byte(cluster.Config))
+		if err != nil {
+			continue
+		}
+		for _, name := range importableKubeconfigContextNames(kubeconfig) {
+			context := kubeconfig.Contexts[name]
+			if context == nil {
+				continue
+			}
+			clusterConfig := kubeconfig.Clusters[context.Cluster]
+			if clusterConfig == nil {
+				continue
+			}
+			identities[kubeconfigClusterIdentity(context.Cluster, clusterConfig)] = struct{}{}
+		}
+	}
+	return identities
+}
+
+func kubeconfigClusterIdentity(clusterName string, clusterConfig *clientcmdapi.Cluster) string {
+	if clusterConfig == nil {
+		return "name:" + clusterName
+	}
+
+	server := strings.TrimSpace(clusterConfig.Server)
+	if server == "" {
+		return "name:" + clusterName
+	}
+
+	return strings.Join([]string{
+		server,
+		clusterConfig.CertificateAuthority,
+		base64.StdEncoding.EncodeToString(clusterConfig.CertificateAuthorityData),
+		fmt.Sprintf("%t", clusterConfig.InsecureSkipTLSVerify),
+		clusterConfig.TLSServerName,
+		clusterConfig.ProxyURL,
+	}, "\x00")
 }
 
 var (
@@ -264,6 +406,7 @@ func syncClusters(cm *ClusterManager, readyCh chan<- struct{}) error {
 		return err
 	}
 	dbClusterMap := make(map[string]interface{})
+	nextDefaultContext := ""
 	type buildResult struct {
 		cluster   *model.Cluster
 		clientSet *ClientSet
@@ -273,9 +416,7 @@ func syncClusters(cm *ClusterManager, readyCh chan<- struct{}) error {
 	for _, cluster := range clusters {
 		dbClusterMap[cluster.Name] = cluster
 		if cluster.IsDefault {
-			cm.mu.Lock()
-			cm.defaultContext = cluster.Name
-			cm.mu.Unlock()
+			nextDefaultContext = cluster.Name
 		}
 		cm.mu.RLock()
 		current, currentExist := cm.clusters[cluster.Name]
@@ -328,6 +469,7 @@ func syncClusters(cm *ClusterManager, readyCh chan<- struct{}) error {
 		cm.mu.Unlock()
 	}
 	cm.mu.Lock()
+	cm.defaultContext = nextDefaultContext
 	for name, clientSet := range cm.clusters {
 		if _, ok := dbClusterMap[name]; !ok {
 			delete(cm.clusters, name)

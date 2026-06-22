@@ -665,7 +665,22 @@
   },
   "errors": {
     "crdNotInstalledTitle": "Resource Type Not Available",
-    "crdNotInstalled": "The {{kind}} resource type ({{version}}) is not installed in this cluster. Install the required CRD to use this feature."
+    "crdNotInstalled": "The {{kind}} resource type ({{version}}) is not installed in this cluster. Install the required CRD to use this feature.",
+    "crdNotInstalledSummary": "This cluster does not have the {{kind}} resource type installed.",
+    "crdNotInstalledReason": "The Kubernetes API Server does not recognize {{kind}}, usually because the required CRD is missing.",
+    "crdNotInstalledSuggestion": "Install the required component or CRD, then refresh this page.",
+    "genericTitle": "Load Failed",
+    "genericSummary": "{{resource}} could not be loaded right now.",
+    "genericSuggestion": "Try again first. If it still fails, expand technical details and send the message to your administrator.",
+    "technicalDetail": "Technical details",
+    "rbac": {
+      "title": "Permission Required",
+      "summary": "The current account is not allowed to {{verb}} {{resource}} {{scope}}.",
+      "reason": "Kubernetes rejected this request: account {{user}} cannot {{verb}} {{resource}} {{scope}}.",
+      "suggestion": "Use a kubeconfig with more permissions, or ask a cluster administrator to grant the required RBAC permission and try again.",
+      "scopeCluster": "at the cluster scope",
+      "scopeNamespace": "in namespace {{namespace}}"
+    }
   },
   "rbac": {
     "noPermissionCluster": "User {{user}} does not have permission to {{verb}} {{resource}} on cluster {{cluster}}",
@@ -684,16 +699,19 @@
       "create": "Create",
       "update": "Update",
       "delete": "Delete",
+      "list": "List",
+      "watch": "Watch",
       "log": "View Logs",
       "exec": "Execute"
     }
   },
   "settings": {
     "title": "Settings",
-    "description": "Manage clusters, roles and permissions",
+    "description": "Manage general configuration and templates",
     "tabs": {
       "clusters": "Cluster",
       "general": "General",
+      "templates": "Templates",
       "oauth": "Authentication",
       "rbac": "RBAC",
       "users": "User"
@@ -713,20 +731,6 @@
         "maxTokens": "Max Tokens"
       }
     },
-    "kubectl": {
-      "title": "Kubectl",
-      "description": "Enable kubectl terminal and configure runtime image.",
-      "form": {
-        "image": "Image"
-      }
-    },
-    "nodeTerminal": {
-      "title": "Node Terminal",
-      "description": "Configure runtime image used for node terminal sessions.",
-      "form": {
-        "image": "Image"
-      }
-    },
     "runtime": {
       "title": "Runtime",
       "description": "Configure analytics and version checking behavior.",
@@ -735,19 +739,9 @@
         "enableVersionCheck": "Enable version check"
       }
     },
-    "loginPrompt": {
-      "title": "Login Prompt",
-      "description": "Show a custom message on the login page.",
-      "form": {
-        "message": "Message",
-        "placeholder": "Leave empty to hide the login prompt"
-      }
-    },
     "errors": {
       "modelRequired": "Model is required",
-      "apiKeyRequired": "API Key is required when AI Agent is enabled",
-      "kubectlImageRequired": "Kubectl image is required when kubectl is enabled",
-      "nodeTerminalImageRequired": "Node terminal image is required"
+      "apiKeyRequired": "API Key is required when AI Agent is enabled"
     },
     "messages": {
       "updated": "General settings updated"

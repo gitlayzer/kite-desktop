@@ -214,6 +214,8 @@ export interface RBACErrorInfo {
   resource: string
   namespace?: string
   cluster: string
+  apiGroup?: string
+  resourceName?: string
 }
 
 export function parseRBACError(errorMessage: string): RBACErrorInfo | null {
@@ -231,6 +233,34 @@ export function parseRBACError(errorMessage: string): RBACErrorInfo | null {
     }
   }
 
+  const clusterPattern =
+    /user (.+) does not have permission to (.+) (.+) on cluster (.+)/
+  const clusterMatch = errorMessage.match(clusterPattern)
+
+  if (clusterMatch) {
+    return {
+      user: clusterMatch[1],
+      verb: clusterMatch[2],
+      resource: clusterMatch[3],
+      cluster: clusterMatch[4],
+    }
+  }
+
+  const k8sForbiddenPattern =
+    /user\s+"([^"]+)"\s+cannot\s+(\w+)\s+resource\s+"([^"]+)"(?:\s+in\s+API\s+group\s+"([^"]*)")?(?:\s+in\s+the\s+namespace\s+"([^"]+)")?(?:\s+at\s+the\s+cluster\s+scope)?/i
+  const k8sForbiddenMatch = errorMessage.match(k8sForbiddenPattern)
+
+  if (k8sForbiddenMatch) {
+    return {
+      user: k8sForbiddenMatch[1],
+      verb: k8sForbiddenMatch[2],
+      resource: k8sForbiddenMatch[3],
+      namespace: k8sForbiddenMatch[5],
+      cluster: '',
+      apiGroup: k8sForbiddenMatch[4] || undefined,
+    }
+  }
+
   return null
 }
 
@@ -245,42 +275,113 @@ export function isCRDNotInstalledError(errorMessage: string): boolean {
   return CRD_NOT_INSTALLED_RE.test(errorMessage)
 }
 
-export function translateError(error: Error | unknown, t: TFunction): string {
+function getErrorMessage(error: Error | unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+  return String(error)
+}
+
+export interface PlainErrorExplanation {
+  title: string
+  summary: string
+  reason?: string
+  suggestion?: string
+  technicalDetail: string
+  kind: 'rbac' | 'crd' | 'generic'
+}
+
+function getResourceDisplayName(resource: string, t: TFunction): string {
+  return t(`nav.${resource}`, {
+    defaultValue: t(`common.fields.${resource}`, {
+      defaultValue: resource,
+    }),
+  })
+}
+
+export function explainError(
+  error: Error | unknown,
+  t: TFunction,
+  resourceName?: string
+): PlainErrorExplanation {
+  const technicalDetail = getErrorMessage(error)
+
   if (!(error instanceof Error)) {
-    return t('common.messages.error', {
-      error: String(error),
-    })
+    return {
+      title: t('errors.genericTitle', '加载失败'),
+      summary: t('common.messages.error', {
+        error: technicalDetail,
+      }),
+      technicalDetail,
+      kind: 'generic',
+    }
   }
 
   const crdMatch = CRD_NOT_INSTALLED_RE.exec(error.message)
   if (crdMatch) {
-    return t('errors.crdNotInstalled', {
-      kind: crdMatch[1],
-      version: crdMatch[2],
-    })
+    return {
+      title: t('errors.crdNotInstalledTitle'),
+      summary: t('errors.crdNotInstalledSummary', {
+        kind: crdMatch[1],
+        version: crdMatch[2],
+      }),
+      reason: t('errors.crdNotInstalledReason', {
+        kind: crdMatch[1],
+      }),
+      suggestion: t('errors.crdNotInstalledSuggestion'),
+      technicalDetail,
+      kind: 'crd',
+    }
   }
 
   const rbacInfo = parseRBACError(error.message)
-
-  if (!rbacInfo) {
-    return error.message
-  }
-
-  if (rbacInfo.namespace) {
-    return t('rbac.noPermissionNamespace', {
-      user: rbacInfo.user,
-      verb: t(`rbac.verb.${rbacInfo.verb}`, {
-        defaultValue: rbacInfo.verb,
-      }),
-      resource: t(`nav.${rbacInfo.resource}`, {
-        defaultValue: rbacInfo.resource,
-      }),
-      namespace: rbacInfo.namespace === 'All' ? 'All' : rbacInfo.namespace,
-      cluster: rbacInfo.cluster,
+  if (rbacInfo) {
+    const verb = t(`rbac.verb.${rbacInfo.verb}`, {
+      defaultValue: rbacInfo.verb,
     })
+    const resource = getResourceDisplayName(rbacInfo.resource, t)
+    const scope = rbacInfo.namespace
+      ? t('errors.rbac.scopeNamespace', {
+          namespace: rbacInfo.namespace,
+        })
+      : t('errors.rbac.scopeCluster')
+
+    return {
+      title: t('errors.rbac.title', '权限不够，加载失败'),
+      summary: t('errors.rbac.summary', {
+        resource: resourceName || resource,
+        verb,
+        scope,
+      }),
+      reason: t('errors.rbac.reason', {
+        user: rbacInfo.user,
+        verb,
+        resource,
+        scope,
+      }),
+      suggestion: t('errors.rbac.suggestion'),
+      technicalDetail,
+      kind: 'rbac',
+    }
   }
 
-  return error.message
+  return {
+    title: t('errors.genericTitle', '加载失败'),
+    summary: t('errors.genericSummary', {
+      resource:
+        resourceName ||
+        t('common.fields.resource', {
+          defaultValue: '资源',
+        }),
+    }),
+    suggestion: t('errors.genericSuggestion'),
+    technicalDetail,
+    kind: 'generic',
+  }
+}
+
+export function translateError(error: Error | unknown, t: TFunction): string {
+  return explainError(error, t).summary
 }
 
 /**

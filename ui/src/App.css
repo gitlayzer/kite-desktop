@@ -1,4 +1,23 @@
 @layer utilities {
+  .electron-drag-region {
+    -webkit-app-region: drag;
+  }
+
+  .electron-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .electron-drag-region button,
+  .electron-drag-region input,
+  .electron-drag-region a,
+  .electron-drag-region textarea,
+  .electron-drag-region select,
+  .electron-drag-region [role='button'],
+  .electron-drag-region [role='combobox'],
+  .electron-drag-region [data-radix-popper-content-wrapper] {
+    -webkit-app-region: no-drag;
+  }
+
   .scrollbar-hide {
     -ms-overflow-style: none; /* IE and Edge */
     scrollbar-width: none; /* Firefox */

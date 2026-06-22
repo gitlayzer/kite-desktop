@@ -17,6 +17,7 @@ func TestLoadEnvs(t *testing.T) {
 		DBType               string
 		KiteEncryptKey       string
 		AnonymousUserEnabled bool
+		DesktopMode          bool
 		Host                 string
 		DisableGZIP          bool
 		EnableVersionCheck   bool
@@ -33,6 +34,7 @@ func TestLoadEnvs(t *testing.T) {
 		DBType:               DBType,
 		KiteEncryptKey:       KiteEncryptKey,
 		AnonymousUserEnabled: AnonymousUserEnabled,
+		DesktopMode:          DesktopMode,
 		Host:                 Host,
 		DisableGZIP:          DisableGZIP,
 		EnableVersionCheck:   EnableVersionCheck,
@@ -50,6 +52,7 @@ func TestLoadEnvs(t *testing.T) {
 		DBType = old.DBType
 		KiteEncryptKey = old.KiteEncryptKey
 		AnonymousUserEnabled = old.AnonymousUserEnabled
+		DesktopMode = old.DesktopMode
 		Host = old.Host
 		DisableGZIP = old.DisableGZIP
 		EnableVersionCheck = old.EnableVersionCheck
@@ -67,6 +70,7 @@ func TestLoadEnvs(t *testing.T) {
 	t.Setenv("DB_TYPE", "mysql")
 	t.Setenv("KITE_ENCRYPT_KEY", "test-encrypt-key")
 	t.Setenv("ANONYMOUS_USER_ENABLED", "true")
+	t.Setenv("KITE_DESKTOP_MODE", "1")
 	t.Setenv("HOST", "example.com")
 	t.Setenv("DISABLE_GZIP", "false")
 	t.Setenv("DISABLE_VERSION_CHECK", "true")
@@ -104,6 +108,9 @@ func TestLoadEnvs(t *testing.T) {
 	}
 	if !AnonymousUserEnabled {
 		t.Fatalf("AnonymousUserEnabled = %v, want true", AnonymousUserEnabled)
+	}
+	if !DesktopMode {
+		t.Fatalf("DesktopMode = %v, want true", DesktopMode)
 	}
 	if Host != "example.com" {
 		t.Fatalf("Host = %q, want %q", Host, "example.com")

@@ -24,7 +24,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Footer } from '@/components/footer'
-import { LanguageToggle } from '@/components/language-toggle'
 
 export function LoginPage() {
   const { t } = useTranslation()
@@ -240,11 +239,6 @@ export function LoginPage() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Language Toggle - Top Right */}
-      <div className="absolute top-6 right-6 z-10">
-        <LanguageToggle />
-      </div>
-
       <div className="flex-1 flex items-center justify-center">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">

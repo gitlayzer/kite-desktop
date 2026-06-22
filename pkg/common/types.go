@@ -43,10 +43,16 @@ type ImportClustersRequest struct {
 }
 
 type ClusterInfo struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	IsDefault bool   `json:"isDefault"`
-	Error     string `json:"error,omitempty"`
+	ID               uint   `json:"id"`
+	Name             string `json:"name"`
+	Description      string `json:"description,omitempty"`
+	Version          string `json:"version"`
+	Enabled          bool   `json:"enabled"`
+	InCluster        bool   `json:"inCluster"`
+	IsDefault        bool   `json:"isDefault"`
+	DefaultNamespace string `json:"defaultNamespace,omitempty"`
+	PrometheusURL    string `json:"prometheusURL,omitempty"`
+	Error            string `json:"error,omitempty"`
 }
 
 type MetricsCell struct {

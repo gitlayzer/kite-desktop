@@ -15,6 +15,7 @@ import {
   formatPodMetrics,
   getAge,
   isCRDNotInstalledError,
+  explainError,
   parseBytes,
   parseRBACError,
   translateError,
@@ -179,6 +180,49 @@ describe('RBAC helpers', () => {
     })
   })
 
+  it('parses cluster RBAC errors', () => {
+    expect(
+      parseRBACError(
+        'user alice does not have permission to get nodes on cluster cluster-a'
+      )
+    ).toEqual({
+      user: 'alice',
+      verb: 'get',
+      resource: 'nodes',
+      cluster: 'cluster-a',
+    })
+  })
+
+  it('parses Kubernetes forbidden errors at cluster scope', () => {
+    expect(
+      parseRBACError(
+        'Failed to list nodes: nodes is forbidden: User "system:serviceaccount:user-system:c3vjdl7g" cannot list resource "nodes" in API group "" at the cluster scope'
+      )
+    ).toEqual({
+      user: 'system:serviceaccount:user-system:c3vjdl7g',
+      verb: 'list',
+      resource: 'nodes',
+      namespace: undefined,
+      cluster: '',
+      apiGroup: undefined,
+    })
+  })
+
+  it('parses Kubernetes forbidden errors in namespace scope', () => {
+    expect(
+      parseRBACError(
+        'pods is forbidden: User "system:serviceaccount:user-system:demo" cannot get resource "pods" in API group "" in the namespace "default"'
+      )
+    ).toEqual({
+      user: 'system:serviceaccount:user-system:demo',
+      verb: 'get',
+      resource: 'pods',
+      namespace: 'default',
+      cluster: '',
+      apiGroup: undefined,
+    })
+  })
+
   it('translates RBAC and non-RBAC errors', () => {
     const t = vi.fn((key: string, options?: Record<string, string>) => {
       if (key === 'rbac.verb.get') {
@@ -187,17 +231,24 @@ describe('RBAC helpers', () => {
       if (key === 'nav.pods') {
         return 'Pods'
       }
-      if (key === 'rbac.noPermissionNamespace') {
+      if (key === 'errors.rbac.scopeNamespace') {
+        return options?.namespace || ''
+      }
+      if (key === 'errors.rbac.summary') {
         return [
-          options?.user,
           options?.verb,
           options?.resource,
-          options?.namespace,
-          options?.cluster,
+          options?.scope,
         ].join('|')
       }
       if (key === 'common.messages.error') {
         return `common:${options?.error}`
+      }
+      if (key === 'errors.genericSummary') {
+        return `generic:${options?.resource}`
+      }
+      if (key === 'common.fields.resource') {
+        return options?.defaultValue || key
       }
       return key
     })
@@ -211,9 +262,9 @@ describe('RBAC helpers', () => {
         ),
         tf
       )
-    ).toBe('alice|read|Pods|All|cluster-a')
+    ).toBe('read|Pods|All')
 
-    expect(translateError(new Error('boom'), tf)).toBe('boom')
+    expect(translateError(new Error('boom'), tf)).toBe('generic:资源')
     expect(translateError({ reason: 'nope' }, tf)).toBe(
       'common:[object Object]'
     )
@@ -221,7 +272,7 @@ describe('RBAC helpers', () => {
 
   it('translates CRD not installed errors', () => {
     const t = vi.fn((key: string, options?: Record<string, string>) => {
-      if (key === 'errors.crdNotInstalled') {
+      if (key === 'errors.crdNotInstalledSummary') {
         return `crd:${options?.kind}:${options?.version}`
       }
       return key
@@ -236,6 +287,43 @@ describe('RBAC helpers', () => {
         tf
       )
     ).toBe('crd:Gateway:gateway.networking.k8s.io/v1')
+  })
+
+  it('explains Kubernetes forbidden errors in plain language', () => {
+    const t = vi.fn((key: string, options?: Record<string, string>) => {
+      if (key === 'rbac.verb.list') return '查看列表'
+      if (key === 'nav.nodes') return 'Nodes'
+      if (key === 'errors.rbac.scopeCluster') return '整个集群范围内'
+      if (key === 'errors.rbac.title') return '权限不够，加载失败'
+      if (key === 'errors.rbac.summary') {
+        return `当前账号没有在${options?.scope}${options?.verb} ${options?.resource} 的权限。`
+      }
+      if (key === 'errors.rbac.reason') {
+        return `账号 ${options?.user} 不能在${options?.scope}${options?.verb} ${options?.resource}。`
+      }
+      if (key === 'errors.rbac.suggestion') return '请补上 RBAC 权限。'
+      return options?.defaultValue || key
+    })
+    const tf = t as unknown as TFunction
+
+    expect(
+      explainError(
+        new Error(
+          'Failed to list nodes: nodes is forbidden: User "system:serviceaccount:user-system:c3vjdl7g" cannot list resource "nodes" in API group "" at the cluster scope'
+        ),
+        tf,
+        'Nodes'
+      )
+    ).toEqual({
+      title: '权限不够，加载失败',
+      summary: '当前账号没有在整个集群范围内查看列表 Nodes 的权限。',
+      reason:
+        '账号 system:serviceaccount:user-system:c3vjdl7g 不能在整个集群范围内查看列表 Nodes。',
+      suggestion: '请补上 RBAC 权限。',
+      technicalDetail:
+        'Failed to list nodes: nodes is forbidden: User "system:serviceaccount:user-system:c3vjdl7g" cannot list resource "nodes" in API group "" at the cluster scope',
+      kind: 'rbac',
+    })
   })
 })
 

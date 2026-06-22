@@ -60,7 +60,7 @@ func buildEngine(cm *cluster.ClusterManager) *gin.Engine {
 
 	base := r.Group(common.Base)
 	setupAPIRouter(base, cm)
-	setupStatic(r)
+	setupStatic(r, middleware.DesktopStaticAccessGuard())
 
 	return r
 }

@@ -20,9 +20,11 @@ import (
 func main() {
 	klog.InitFlags(nil)
 	flag.Parse()
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
+	if os.Getenv("KITE_ENABLE_PPROF") == "1" || os.Getenv("KITE_ENABLE_PPROF") == "true" {
+		go func() {
+			log.Println(http.ListenAndServe("localhost:6060", nil))
+		}()
+	}
 
 	appCtx, cancelApp := context.WithCancel(context.Background())
 
@@ -33,8 +35,12 @@ func main() {
 	}
 	defer cancelApp()
 
+	addr := ":" + common.Port
+	if common.DesktopMode {
+		addr = "127.0.0.1:" + common.Port
+	}
 	srv := &http.Server{
-		Addr:              ":" + common.Port,
+		Addr:              addr,
 		Handler:           buildEngine(cm).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,

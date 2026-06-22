@@ -1,9 +1,9 @@
 /* eslint-disable react-refresh/only-export-components */
-import React, { createContext, useEffect, useState } from 'react'
+import React, { createContext, useCallback, useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import { Cluster } from '@/types/api'
+import type { Cluster } from '@/types/api'
 import { useCurrentClusterList } from '@/lib/api'
 import {
   clearCurrentCluster,
@@ -14,7 +14,10 @@ import {
 interface ClusterContextType {
   clusters: Cluster[]
   currentCluster: string | null
-  setCurrentCluster: (clusterName: string) => void
+  currentClusterData: Cluster | null
+  setCurrentCluster: (clusterName: string) => Promise<void>
+  enterCluster: (clusterName: string) => Promise<void>
+  refreshClusters: () => Promise<void>
   isLoading: boolean
   isSwitching?: boolean
   error: Error | null
@@ -38,6 +41,18 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
   const { refetch: refetchClusters } = useCurrentClusterList({
     enabled: false,
   })
+
+  const refreshClusters = useCallback(async () => {
+    const result = await refetchClusters()
+    if (result.data) {
+      setClusters(result.data)
+      setError(null)
+      return
+    }
+
+    setClusters([])
+    setError(result.error instanceof Error ? result.error : null)
+  }, [refetchClusters])
 
   useEffect(() => {
     if (currentCluster) {
@@ -75,24 +90,28 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [refetchClusters])
 
   useEffect(() => {
-    if (clusters.length > 0 && !currentCluster) {
-      const defaultCluster = clusters.find((cluster) => cluster.isDefault)
-      const nextCluster = defaultCluster
-        ? defaultCluster.name
-        : clusters[0].name
-      setCurrentClusterState(nextCluster)
-      persistCurrentCluster(nextCluster)
+    if (isLoading) {
+      return
     }
 
-    if (
-      currentCluster &&
-      clusters.length > 0 &&
-      !clusters.some((cluster) => cluster.name === currentCluster)
-    ) {
+    if (clusters.length === 0) {
+      if (currentCluster) {
+        setCurrentClusterState(null)
+        clearCurrentCluster()
+      }
+      return
+    }
+
+    const selectedCluster = currentCluster
+      ? clusters.find((cluster) => cluster.name === currentCluster)
+      : null
+
+    if (currentCluster && (!selectedCluster || selectedCluster.error)) {
       setCurrentClusterState(null)
       clearCurrentCluster()
+      return
     }
-  }, [clusters, currentCluster])
+  }, [clusters, currentCluster, isLoading])
 
   const setCurrentCluster = async (clusterName: string) => {
     if (clusterName === currentCluster || isSwitching) {
@@ -123,10 +142,18 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }
 
+  const enterCluster = async (clusterName: string) => {
+    await setCurrentCluster(clusterName)
+  }
+
   const value: ClusterContextType = {
     clusters,
     currentCluster,
+    currentClusterData:
+      clusters.find((cluster) => cluster.name === currentCluster) || null,
     setCurrentCluster,
+    enterCluster,
+    refreshClusters,
     isLoading,
     isSwitching,
     error,

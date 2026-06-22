@@ -33,6 +33,7 @@ func setupAPIRouter(r *gin.RouterGroup, cm *cluster.ClusterManager) {
 	helmChartsHandler := helm.NewHelmChartHandler()
 
 	registerBaseRoutes(r)
+	r.Use(middleware.DesktopAccessGuard())
 	r.GET("/api/v1/bootstrap", authHandler.Bootstrap)
 	registerAuthRoutes(r, authHandler)
 	registerUserRoutes(r, authHandler)
@@ -41,14 +42,14 @@ func setupAPIRouter(r *gin.RouterGroup, cm *cluster.ClusterManager) {
 }
 
 func registerBaseRoutes(r *gin.RouterGroup) {
-	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(promclient.Gatherers{
+	r.GET("/metrics", middleware.DesktopAccessGuard(), gin.WrapH(promhttp.HandlerFor(promclient.Gatherers{
 		promclient.DefaultGatherer,
 		ctrlmetrics.Registry,
 	}, promhttp.HandlerOpts{})))
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-	r.GET("/api/v1/version", version.GetVersion)
+	r.GET("/api/v1/version", middleware.DesktopAccessGuard(), version.GetVersion)
 }
 
 func registerAuthRoutes(r *gin.RouterGroup, authHandler *auth.AuthHandler) {

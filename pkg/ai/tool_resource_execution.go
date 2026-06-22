@@ -21,6 +21,12 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+const (
+	aiResourceListLimit     int64 = 100
+	aiClusterOverviewLimit  int64 = 500
+	aiClusterCountOnlyLimit int64 = 1
+)
+
 func recordResourceHistory(cs *cluster.ClientSet, user pkgmodel.User, kind, name, namespace, opType, resourceYAML, previousYAML string, success bool, err error) {
 	errMsg := ""
 	if err != nil {
@@ -137,6 +143,7 @@ func executeListResources(ctx context.Context, cs *cluster.ClientSet, args map[s
 	list.SetGroupVersionKind(resource.ListGVK())
 
 	var listOpts []client.ListOption
+	listOpts = append(listOpts, client.Limit(aiResourceListLimit))
 	if namespace != "" {
 		listOpts = append(listOpts, client.InNamespace(namespace))
 	}
@@ -155,12 +162,16 @@ func executeListResources(ctx context.Context, cs *cluster.ClientSet, args map[s
 	// Build a summary
 	var sb strings.Builder
 	kindLower := strings.ToLower(resource.Kind)
-	fmt.Fprintf(&sb, "Found %d %s(s)", len(list.Items), resource.Kind)
+	total := countListItems(len(list.Items), list.GetRemainingItemCount())
+	fmt.Fprintf(&sb, "Found %d %s(s)", total, resource.Kind)
 	if namespace != "" {
 		fmt.Fprintf(&sb, " in namespace %s", namespace)
 	}
 	if labelSelector != "" {
 		fmt.Fprintf(&sb, " (label_selector: %s)", labelSelector)
+	}
+	if list.GetContinue() != "" || list.GetRemainingItemCount() != nil {
+		fmt.Fprintf(&sb, "; showing first %d", len(list.Items))
 	}
 	sb.WriteString(":\n\n")
 
@@ -182,6 +193,13 @@ func executeListResources(ctx context.Context, cs *cluster.ClientSet, args map[s
 	}
 
 	return sb.String(), false
+}
+
+func countListItems(loaded int, remaining *int64) int {
+	if remaining == nil {
+		return loaded
+	}
+	return loaded + int(*remaining)
 }
 
 func resourceSummaryDetails(kindLower string, item unstructured.Unstructured) []string {
@@ -515,7 +533,7 @@ func executeGetClusterOverview(ctx context.Context, cs *cluster.ClientSet) (stri
 
 	// Nodes
 	nodes := &corev1.NodeList{}
-	if err := cs.K8sClient.List(ctx, nodes); err != nil {
+	if err := cs.K8sClient.List(ctx, nodes, client.Limit(aiClusterOverviewLimit)); err != nil {
 		fmt.Fprintf(&sb, "Error listing nodes: %v\n", err)
 	} else {
 		ready := 0
@@ -526,12 +544,17 @@ func executeGetClusterOverview(ctx context.Context, cs *cluster.ClientSet) (stri
 				}
 			}
 		}
-		fmt.Fprintf(&sb, "Nodes: %d total, %d ready\n", len(nodes.Items), ready)
+		total := countListItems(len(nodes.Items), nodes.GetRemainingItemCount())
+		if nodes.GetContinue() != "" || nodes.GetRemainingItemCount() != nil {
+			fmt.Fprintf(&sb, "Nodes: %d total, %d ready in first %d\n", total, ready, len(nodes.Items))
+		} else {
+			fmt.Fprintf(&sb, "Nodes: %d total, %d ready\n", total, ready)
+		}
 	}
 
 	// Pods
 	pods := &corev1.PodList{}
-	if err := cs.K8sClient.List(ctx, pods); err != nil {
+	if err := cs.K8sClient.List(ctx, pods, client.Limit(aiClusterOverviewLimit)); err != nil {
 		fmt.Fprintf(&sb, "Error listing pods: %v\n", err)
 	} else {
 		running, pending, failed, succeeded := 0, 0, 0, 0
@@ -547,19 +570,24 @@ func executeGetClusterOverview(ctx context.Context, cs *cluster.ClientSet) (stri
 				succeeded++
 			}
 		}
-		fmt.Fprintf(&sb, "Pods: %d total (%d running, %d pending, %d failed, %d succeeded)\n", len(pods.Items), running, pending, failed, succeeded)
+		total := countListItems(len(pods.Items), pods.GetRemainingItemCount())
+		if pods.GetContinue() != "" || pods.GetRemainingItemCount() != nil {
+			fmt.Fprintf(&sb, "Pods: %d total; first %d sample (%d running, %d pending, %d failed, %d succeeded)\n", total, len(pods.Items), running, pending, failed, succeeded)
+		} else {
+			fmt.Fprintf(&sb, "Pods: %d total (%d running, %d pending, %d failed, %d succeeded)\n", total, running, pending, failed, succeeded)
+		}
 	}
 
 	// Namespaces
 	namespaces := &corev1.NamespaceList{}
-	if err := cs.K8sClient.List(ctx, namespaces); err == nil {
-		fmt.Fprintf(&sb, "Namespaces: %d\n", len(namespaces.Items))
+	if err := cs.K8sClient.List(ctx, namespaces, client.Limit(aiClusterCountOnlyLimit)); err == nil {
+		fmt.Fprintf(&sb, "Namespaces: %d\n", countListItems(len(namespaces.Items), namespaces.GetRemainingItemCount()))
 	}
 
 	// Services
 	services := &corev1.ServiceList{}
-	if err := cs.K8sClient.List(ctx, services); err == nil {
-		fmt.Fprintf(&sb, "Services: %d\n", len(services.Items))
+	if err := cs.K8sClient.List(ctx, services, client.Limit(aiClusterCountOnlyLimit)); err == nil {
+		fmt.Fprintf(&sb, "Services: %d\n", countListItems(len(services.Items), services.GetRemainingItemCount()))
 	}
 
 	return sb.String(), false

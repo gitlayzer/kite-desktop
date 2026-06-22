@@ -28,6 +28,7 @@ type bootstrapAuthOptions struct {
 type bootstrapCapabilities struct {
 	AIEnabled      bool `json:"aiEnabled"`
 	KubectlEnabled bool `json:"kubectlEnabled"`
+	DesktopMode    bool `json:"desktopMode"`
 }
 
 type bootstrapResponse struct {
@@ -65,6 +66,7 @@ func (h *AuthHandler) Bootstrap(c *gin.Context) {
 		Capabilities: bootstrapCapabilities{
 			AIEnabled:      setting.AIAgentEnabled && strings.TrimSpace(string(setting.AIAPIKey)) != "",
 			KubectlEnabled: setting.KubectlEnabled,
+			DesktopMode:    common.DesktopMode,
 		},
 		User:                       user,
 		HasGlobalSidebarPreference: globalSidebarPreference != "",
@@ -73,6 +75,10 @@ func (h *AuthHandler) Bootstrap(c *gin.Context) {
 }
 
 func currentBootstrapSetup() bootstrapSetupState {
+	if common.DesktopMode {
+		return bootstrapSetupState{Initialized: true, Step: 2}
+	}
+
 	step := 0
 	uc, _ := model.CountUsers()
 	if uc == 0 && !common.AnonymousUserEnabled {
@@ -95,6 +101,16 @@ func currentBootstrapSetup() bootstrapSetupState {
 }
 
 func (h *AuthHandler) bootstrapAuth(setting *model.GeneralSetting) bootstrapAuthOptions {
+	if common.DesktopMode {
+		return bootstrapAuthOptions{
+			Providers:           []string{},
+			CredentialProviders: []string{},
+			OAuthProviders:      []string{},
+			MFAEnabled:          false,
+			PasskeyLoginEnabled: false,
+		}
+	}
+
 	var credentialProviders []string
 	loginPrompt := ""
 
@@ -128,6 +144,16 @@ func (h *AuthHandler) bootstrapAuth(setting *model.GeneralSetting) bootstrapAuth
 }
 
 func (h *AuthHandler) bootstrapUser(c *gin.Context, setting *model.GeneralSetting) *model.User {
+	if common.DesktopMode {
+		user, err := model.EnsureDesktopUser()
+		if err != nil {
+			klog.Warningf("Failed to load desktop user: %v", err)
+			return nil
+		}
+		applyBootstrapSidebarPreference(user, setting)
+		return user
+	}
+
 	if common.AnonymousUserEnabled {
 		u := model.GetAnonymousUser()
 		if u == nil {

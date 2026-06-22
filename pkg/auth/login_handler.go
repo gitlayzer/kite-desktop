@@ -17,6 +17,11 @@ import (
 )
 
 func (h *AuthHandler) Login(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "login is disabled in desktop mode"})
+		return
+	}
+
 	provider := c.Query("provider")
 	if provider == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -48,6 +53,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 }
 
 func (h *AuthHandler) PasswordLogin(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "login is disabled in desktop mode"})
+		return
+	}
+
 	setting, err := model.GetGeneralSetting()
 	if err == nil && setting.PasswordLoginDisabled {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Password login is disabled"})
@@ -57,6 +67,11 @@ func (h *AuthHandler) PasswordLogin(c *gin.Context) {
 }
 
 func (h *AuthHandler) CreateSuperUser(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "setup is disabled in desktop mode"})
+		return
+	}
+
 	var userreq struct {
 		Username string `json:"username" binding:"required"`
 		Password string `json:"password" binding:"required"`
@@ -99,10 +114,20 @@ func (h *AuthHandler) CreateSuperUser(c *gin.Context) {
 }
 
 func (h *AuthHandler) LDAPLogin(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "login is disabled in desktop mode"})
+		return
+	}
+
 	h.handleCredentialLogin(c, model.AuthProviderLDAP, h.authenticateAndSyncLDAPUser)
 }
 
 func (h *AuthHandler) PasskeyLoginBegin(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "login is disabled in desktop mode"})
+		return
+	}
+
 	enabled, err := passkey.Enabled()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load general setting"})
@@ -121,6 +146,11 @@ func (h *AuthHandler) PasskeyLoginBegin(c *gin.Context) {
 }
 
 func (h *AuthHandler) PasskeyLoginFinish(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusForbidden, gin.H{"error": "login is disabled in desktop mode"})
+		return
+	}
+
 	enabled, err := passkey.Enabled()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load general setting"})
@@ -362,6 +392,14 @@ func (h *AuthHandler) Callback(c *gin.Context) {
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "Desktop mode remains signed in",
+		})
+		return
+	}
+
 	setCookieSecure(c, "auth_token", "", -1)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -402,6 +440,14 @@ func (h *AuthHandler) GetUser(c *gin.Context) {
 }
 
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
+	if common.DesktopMode {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "Desktop mode does not use auth tokens",
+		})
+		return
+	}
+
 	tokenString, err := c.Cookie("auth_token")
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{

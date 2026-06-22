@@ -52,6 +52,20 @@ func (h *AuthHandler) RequireAPIKeyAuth(c *gin.Context, token string) {
 
 func (h *AuthHandler) RequireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if common.DesktopMode {
+			user, err := model.EnsureDesktopUser()
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "failed to load desktop user",
+				})
+				c.Abort()
+				return
+			}
+			c.Set("user", *user)
+			c.Next()
+			return
+		}
+
 		if common.AnonymousUserEnabled {
 			u := model.GetAnonymousUser()
 			if u == nil {

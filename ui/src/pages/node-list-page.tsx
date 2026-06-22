@@ -122,6 +122,7 @@ const nodeSearchFilter = createSearchFilter<NodeWithMetrics>(
 )
 
 const columnHelper = createColumnHelper<NodeWithMetrics>()
+const nodeResourceQueryParams = { includePodRequests: true }
 
 export function NodeListPage() {
   const { t } = useTranslation()
@@ -275,6 +276,7 @@ export function NodeListPage() {
       clusterScope={true}
       searchQueryFilter={nodeSearchFilter}
       showCreateButton={false}
+      resourceQueryParams={nodeResourceQueryParams}
       defaultHiddenColumns={[
         'status_nodeInfo_kernelVersion',
         'status_nodeInfo_osImage',

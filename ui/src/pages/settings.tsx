@@ -3,11 +3,17 @@ import { useTranslation } from 'react-i18next'
 
 import { usePageTitle } from '@/hooks/use-page-title'
 import { ResponsiveTabs } from '@/components/ui/responsive-tabs'
-import { createSettingsTabs } from '@/components/settings/settings-sections'
+import { createSettingsTabsForMode } from '@/components/settings/settings-sections'
+import { useAuth } from '@/contexts/auth-context'
 
 export function SettingsPage() {
   const { t } = useTranslation()
-  const tabs = useMemo(() => createSettingsTabs(t), [t])
+  const { capabilities } = useAuth()
+  const desktopMode = capabilities.desktopMode
+  const tabs = useMemo(
+    () => createSettingsTabsForMode(t, desktopMode),
+    [desktopMode, t]
+  )
 
   usePageTitle('Settings')
 
@@ -18,7 +24,7 @@ export function SettingsPage() {
           <h1 className="text-3xl">{t('settings.title', 'Settings')}</h1>
         </div>
         <p className="text-muted-foreground">
-          {t('settings.description', 'Manage clusters, roles and permissions')}
+          {t('settings.description', 'Manage general configuration and templates')}
         </p>
       </div>
 

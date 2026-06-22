@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
 	"sort"
@@ -12,6 +13,8 @@ import (
 	"github.com/zxh326/kite/pkg/common"
 	"github.com/zxh326/kite/pkg/model"
 	"github.com/zxh326/kite/pkg/rbac"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -19,6 +22,28 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const (
+	defaultListLimit int64 = 100
+	maxListLimit     int64 = 500
+)
+
+func normalizeListLimit(raw string) (int64, bool, error) {
+	if raw == "" {
+		return defaultListLimit, true, nil
+	}
+	limit, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid limit parameter")
+	}
+	if limit <= 0 {
+		return defaultListLimit, true, nil
+	}
+	if limit > maxListLimit {
+		return maxListLimit, true, nil
+	}
+	return limit, true, nil
+}
 
 func (h *GenericResourceHandler[T, V]) list(c *gin.Context) (V, error) {
 	var zero V
@@ -34,12 +59,11 @@ func (h *GenericResourceHandler[T, V]) list(c *gin.Context) (V, error) {
 			listOpts = append(listOpts, client.InNamespace(namespace))
 		}
 	}
-	if c.Query("limit") != "" {
-		limit, err := strconv.ParseInt(c.Query("limit"), 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid limit parameter"})
-			return zero, err
-		}
+
+	if limit, enabled, err := normalizeListLimit(c.Query("limit")); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return zero, err
+	} else if enabled {
 		listOpts = append(listOpts, client.Limit(limit))
 	}
 
@@ -78,6 +102,15 @@ func (h *GenericResourceHandler[T, V]) list(c *gin.Context) (V, error) {
 			_ = meta.SetList(objectList, []runtime.Object{})
 			return objectList, nil
 		}
+		if h.Name() == string(common.Namespaces) && apierrors.IsForbidden(err) && cs.DefaultNamespace != "" {
+			namespace := &corev1.Namespace{}
+			namespace.SetName(cs.DefaultNamespace)
+			if c.Query("reduce") == "true" {
+				namespace = reduceNamespaceListItem(namespace)
+			}
+			_ = meta.SetList(objectList, []runtime.Object{namespace})
+			return objectList, nil
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return zero, err
 	}
@@ -87,6 +120,8 @@ func (h *GenericResourceHandler[T, V]) list(c *gin.Context) (V, error) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to extract items from list"})
 		return zero, err
 	}
+	// Sorting is intentionally page-local. Sorting an unbounded full list is
+	// expensive for large clusters and defeats Kubernetes cursor pagination.
 	sort.Slice(items, func(i, j int) bool {
 		o1, _ := meta.Accessor(items[i])
 		o2, _ := meta.Accessor(items[j])
@@ -124,9 +159,27 @@ func (h *GenericResourceHandler[T, V]) list(c *gin.Context) (V, error) {
 		}
 		filterItems = append(filterItems, items[i])
 	}
+	if c.Query("reduce") == "true" && h.Name() == string(common.Namespaces) {
+		for i := range filterItems {
+			namespace, ok := filterItems[i].(*corev1.Namespace)
+			if ok {
+				filterItems[i] = reduceNamespaceListItem(namespace)
+			}
+		}
+	}
 	_ = meta.SetList(objectList, filterItems)
 
 	return objectList, nil
+}
+
+func reduceNamespaceListItem(namespace *corev1.Namespace) *corev1.Namespace {
+	reduced := &corev1.Namespace{}
+	reduced.SetName(namespace.GetName())
+	reduced.SetUID(namespace.GetUID())
+	reduced.SetResourceVersion(namespace.GetResourceVersion())
+	reduced.SetCreationTimestamp(namespace.GetCreationTimestamp())
+	reduced.SetLabels(namespace.GetLabels())
+	return reduced
 }
 
 func (h *GenericResourceHandler[T, V]) List(c *gin.Context) {
@@ -155,6 +208,7 @@ func (h *GenericResourceHandler[T, V]) Search(c *gin.Context, q string, limit in
 		labelValue := strings.TrimSpace(q[idx+1:])
 		listOpts = append(listOpts, client.MatchingLabels{labelKey: labelValue})
 	}
+	listOpts = append(listOpts, client.Limit(maxListLimit))
 	if err := cs.K8sClient.List(ctx, objectList, listOpts...); err != nil {
 		klog.Errorf("failed to list %s: %v", h.name, err)
 		return nil, err

@@ -10,12 +10,10 @@ import { useAuth } from '@/contexts/auth-context'
 import { useSidebarConfig } from '@/contexts/sidebar-config-context'
 import {
   IconLayoutDashboard,
-  IconMoon,
   IconServer,
   IconSettings,
   IconStar,
   IconStarFilled,
-  IconSun,
 } from '@tabler/icons-react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
@@ -44,7 +42,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useAppearance } from '@/components/appearance-provider'
 
 interface SidebarSearchItem {
   id: string
@@ -120,9 +117,9 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   const searchRequestIdRef = useRef(0)
   const mountedRef = useRef(true)
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, capabilities } = useAuth()
+  const desktopMode = capabilities.desktopMode
   const { config, getIconComponent } = useSidebarConfig()
-  const { setTheme, actualTheme } = useAppearance()
   const {
     clusters,
     currentCluster,
@@ -139,27 +136,36 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     }
   }, [])
 
-  // Simple theme toggle function
-  const toggleTheme = useCallback(() => {
-    if (actualTheme === 'dark') {
-      setTheme('light')
-    } else {
-      setTheme('dark')
-    }
-  }, [actualTheme, setTheme])
-
   const sidebarItems = useMemo<SidebarSearchItem[]>(() => {
     const overviewTitle = t('nav.overview')
     const items: SidebarSearchItem[] = [
-      {
-        id: 'sidebar-overview',
-        title: overviewTitle,
-        url: '/',
-        Icon: IconLayoutDashboard,
-        groupLabel: undefined,
-        searchText: `${overviewTitle} overview dashboard /`.toLowerCase(),
-        isPinned: false,
-      },
+      ...(!currentCluster
+        ? [
+            {
+              id: 'cluster-landing',
+              title: '选择集群',
+              url: '/clusters',
+              Icon: IconLayoutDashboard,
+              groupLabel: undefined,
+              searchText: '选择集群 cluster clusters landing'.toLowerCase(),
+              isPinned: false,
+            },
+          ]
+        : []),
+      ...(currentCluster
+        ? [
+            {
+              id: 'sidebar-overview',
+              title: overviewTitle,
+              url: '/dashboard',
+              Icon: IconLayoutDashboard,
+              groupLabel: undefined,
+              searchText:
+                `${overviewTitle} overview dashboard /dashboard`.toLowerCase(),
+              isPinned: false,
+            },
+          ]
+        : []),
       ...(user?.isAdmin()
         ? [
             {
@@ -172,46 +178,50 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
                 `${t('settings.title', 'Settings')} admin`.toLowerCase(),
               isPinned: false,
             },
-            {
-              id: 'clusters',
-              title: t('settings.tabs.clusters', 'Cluster'),
-              url: '/settings?tab=clusters',
-              Icon: IconSettings,
-              groupLabel: 'Settings',
-              searchText:
-                `${t('settings.tabs.clusters', 'Cluster')} settings cluster admin`.toLowerCase(),
-              isPinned: false,
-            },
-            {
-              id: 'oauth',
-              title: t('settings.tabs.oauth', 'Authentication'),
-              url: '/settings?tab=oauth',
-              Icon: IconSettings,
-              groupLabel: 'Settings',
-              searchText:
-                `${t('settings.tabs.oauth', 'Authentication')} settings authentication ldap oauth admin`.toLowerCase(),
-              isPinned: false,
-            },
-            {
-              id: 'rbac',
-              title: t('settings.tabs.rbac', 'RBAC'),
-              url: '/settings?tab=rbac',
-              Icon: IconSettings,
-              groupLabel: 'Settings',
-              searchText:
-                `${t('settings.tabs.rbac', 'RBAC')} settings rbac admin`.toLowerCase(),
-              isPinned: false,
-            },
-            {
-              id: 'users',
-              title: t('settings.tabs.users', 'User'),
-              url: '/settings?tab=users',
-              Icon: IconSettings,
-              groupLabel: 'Settings',
-              searchText:
-                `${t('settings.tabs.users', 'User')} settings user admin`.toLowerCase(),
-              isPinned: false,
-            },
+            ...(!desktopMode
+              ? [
+                  {
+                    id: 'clusters',
+                    title: t('settings.tabs.clusters', 'Cluster'),
+                    url: '/settings?tab=clusters',
+                    Icon: IconSettings,
+                    groupLabel: 'Settings',
+                    searchText:
+                      `${t('settings.tabs.clusters', 'Cluster')} settings cluster admin`.toLowerCase(),
+                    isPinned: false,
+                  },
+                  {
+                    id: 'oauth',
+                    title: t('settings.tabs.oauth', 'Authentication'),
+                    url: '/settings?tab=oauth',
+                    Icon: IconSettings,
+                    groupLabel: 'Settings',
+                    searchText:
+                      `${t('settings.tabs.oauth', 'Authentication')} settings authentication ldap oauth admin`.toLowerCase(),
+                    isPinned: false,
+                  },
+                  {
+                    id: 'rbac',
+                    title: t('settings.tabs.rbac', 'RBAC'),
+                    url: '/settings?tab=rbac',
+                    Icon: IconSettings,
+                    groupLabel: 'Settings',
+                    searchText:
+                      `${t('settings.tabs.rbac', 'RBAC')} settings rbac admin`.toLowerCase(),
+                    isPinned: false,
+                  },
+                  {
+                    id: 'users',
+                    title: t('settings.tabs.users', 'User'),
+                    url: '/settings?tab=users',
+                    Icon: IconSettings,
+                    groupLabel: 'Settings',
+                    searchText:
+                      `${t('settings.tabs.users', 'User')} settings user admin`.toLowerCase(),
+                    isPinned: false,
+                  },
+                ]
+              : []),
           ]
         : []),
     ]
@@ -221,6 +231,10 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     }
 
     const pinnedItems = new Set(config.pinnedItems)
+
+    if (!currentCluster) {
+      return items
+    }
 
     config.groups.forEach((group) => {
       const groupLabel = group.nameKey
@@ -255,7 +269,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     })
 
     return items
-  }, [config, getIconComponent, t, user])
+  }, [config, currentCluster, desktopMode, getIconComponent, t, user])
 
   const sidebarResults = useMemo(() => {
     const trimmedQuery = query.trim().toLowerCase()
@@ -275,13 +289,6 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
 
   const actionItems: ActionSearchItem[] = useMemo(() => {
     return [
-      {
-        id: 'toggle-theme',
-        label: t('globalSearch.toggleTheme'),
-        icon: actualTheme === 'dark' ? IconSun : IconMoon,
-        searchText: 'toggle theme switch mode light dark'.toLocaleLowerCase(),
-        onSelect: toggleTheme,
-      },
       ...(clusters.length > 1
         ? clusters
             .filter((cluster) => cluster.name !== currentCluster)
@@ -304,14 +311,12 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         : []),
     ]
   }, [
-    actualTheme,
     clusters,
     currentCluster,
     isClusterLoading,
     isSwitching,
     setCurrentCluster,
     t,
-    toggleTheme,
   ])
 
   // Filter theme option based on query
@@ -362,6 +367,11 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   )
 
   useEffect(() => {
+    if (!currentCluster) {
+      setResults([])
+      return
+    }
+
     const searchQuery = query.trim()
     const favoriteResults = favorites || []
     const previousResults = lastSearchResults || []
@@ -382,10 +392,16 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     setResults((currentResults) =>
       filterResults(cachedResults || currentResults, searchQuery)
     )
-  }, [favorites, filterResults, lastSearchResults, query])
+  }, [currentCluster, favorites, filterResults, lastSearchResults, query])
 
   const performSearch = useCallback(
     async (searchQuery: string, requestId: number) => {
+      if (!currentCluster) {
+        setResults([])
+        setIsLoading(false)
+        return
+      }
+
       try {
         const response = await globalSearch(searchQuery, { limit: 10 })
         if (!mountedRef.current || searchRequestIdRef.current !== requestId) {
@@ -405,15 +421,15 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         }
       }
     },
-    []
+    [currentCluster]
   )
 
-  useEffect(() => {
-    const searchQuery = query.trim()
-    if (!searchQuery) {
-      searchRequestIdRef.current += 1
-      setIsLoading(false)
-      return
+	  useEffect(() => {
+	    const searchQuery = query.trim()
+	    if (!searchQuery || searchQuery.length < 2) {
+	      searchRequestIdRef.current += 1
+	      setIsLoading(false)
+	      return
     }
 
     const requestId = searchRequestIdRef.current + 1
@@ -532,9 +548,9 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
             {actionResults.length > 0 && (
               <CommandGroup heading={t('globalSearch.actions')}>
                 {actionResults.map((actionOption) => (
-                  <CommandItem
+                    <CommandItem
                     key={actionOption.id}
-                    value={`${actionOption.label} theme toggle mode`}
+                    value={`${actionOption.label} action`}
                     onSelect={() => {
                       actionOption.onSelect()
                       onOpenChange(false)
@@ -548,13 +564,6 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
                         <span className="font-medium">
                           {actionOption.label}
                         </span>
-                        {actionOption.id === 'toggle-theme' && (
-                          <Badge className="text-xs" variant="outline">
-                            {actualTheme === 'dark'
-                              ? 'Switch to Light'
-                              : 'Switch to Dark'}
-                          </Badge>
-                        )}
                       </div>
                     </div>
                   </CommandItem>
@@ -562,7 +571,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
               </CommandGroup>
             )}
 
-            {results && results.length > 0 && (
+            {currentCluster && results && results.length > 0 && (
               <CommandGroup
                 heading={
                   !query.trim() && (favorites || []).length > 0

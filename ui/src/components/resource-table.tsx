@@ -17,7 +17,10 @@ import { ResourceType } from '@/types/api'
 import { deleteResource } from '@/lib/api'
 import { getResourceMetadata } from '@/lib/resource-catalog'
 import { useCluster } from '@/hooks/use-cluster'
-import { useResourceTableData } from '@/hooks/use-resource-table-data'
+import {
+  RESOURCE_TABLE_PAGE_SIZE,
+  useResourceTableData,
+} from '@/hooks/use-resource-table-data'
 import { useResourceTableState } from '@/hooks/use-resource-table-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -46,6 +49,7 @@ export interface ResourceTableProps<T> {
   onCreateClick?: () => void // Callback for create button click
   extraToolbars?: React.ReactNode[] // Additional toolbar components
   defaultHiddenColumns?: string[] // Columns to hide by default
+  resourceQueryParams?: Record<string, string | number | boolean | undefined>
 }
 
 export function ResourceTable<T>(props: ResourceTableProps<T>) {
@@ -66,6 +70,7 @@ function ResourceTableContent<T>({
   onCreateClick,
   extraToolbars = [],
   defaultHiddenColumns = [],
+  resourceQueryParams,
 }: ResourceTableProps<T>) {
   const { t } = useTranslation()
   const {
@@ -87,6 +92,7 @@ function ResourceTableContent<T>({
     setRefreshInterval,
     selectedNamespace,
     effectiveNamespace,
+    requiresNamespace,
     useSSE,
     handleNamespaceChange,
     handleUseSSEChange,
@@ -110,12 +116,21 @@ function ResourceTableContent<T>({
           : ''
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteProgress, setDeleteProgress] = useState({ done: 0, total: 0 })
+  const [cursorIndex, setCursorIndex] = useState(0)
+  const [pageTokens, setPageTokens] = useState<string[]>([''])
+  const [serverNameFilter, setServerNameFilter] = useState('')
+  const currentContinueToken = pageTokens[cursorIndex] || undefined
+  const fieldSelector = serverNameFilter
+    ? `metadata.name=${serverNameFilter}`
+    : undefined
   const {
     resourceType: resolvedResourceType,
     data,
+    listMeta,
     isLoading,
     isError,
     error,
+    warning,
     refetch,
     isConnected,
   } = useResourceTableData<T>({
@@ -124,6 +139,9 @@ function ResourceTableContent<T>({
     namespace: effectiveNamespace,
     useSSE,
     refreshInterval,
+    continueToken: currentContinueToken,
+    fieldSelector,
+    queryParams: resourceQueryParams,
   })
   const displayResourceName = (() => {
     const resource = getResourceMetadata(resolvedResourceType)
@@ -226,6 +244,82 @@ function ResourceTableContent<T>({
   const memoizedData = useMemo(
     () => (namespaceFilteredData || []) as T[],
     [namespaceFilteredData]
+  )
+  const hasNextCursor = Boolean(listMeta?.continue)
+  const hasPreviousCursor = cursorIndex > 0
+  const isAllNamespacesView = !clusterScope && selectedNamespace === '_all'
+  const resetCursor = useCallback(() => {
+    setCursorIndex(0)
+    setPageTokens([''])
+  }, [])
+
+  useEffect(() => {
+    resetCursor()
+  }, [
+    resolvedResourceType,
+    effectiveNamespace,
+    serverNameFilter,
+    searchQuery,
+    columnFilters,
+    resetCursor,
+  ])
+
+  const applyExactNameFilter = useCallback(() => {
+    const trimmed = searchQuery.trim()
+    setServerNameFilter(trimmed)
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+    resetCursor()
+  }, [resetCursor, searchQuery, setPagination])
+
+  const clearExactNameFilter = useCallback(() => {
+    setServerNameFilter('')
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+    resetCursor()
+  }, [resetCursor, setPagination])
+
+  const handleNextDataPage = useCallback(() => {
+    const nextToken = listMeta?.continue
+    if (!nextToken) {
+      return
+    }
+    setPageTokens((current) => {
+      if (current[cursorIndex + 1] === nextToken) {
+        return current
+      }
+      const next = current.slice(0, cursorIndex + 1)
+      next.push(nextToken)
+      return next
+    })
+    setCursorIndex((current) => current + 1)
+    setPagination((prev) => ({ ...prev, pageIndex: 0 }))
+  }, [cursorIndex, listMeta?.continue, setPagination])
+
+  const handlePreviousDataPage = useCallback(() => {
+    if (cursorIndex === 0) {
+      return
+    }
+    setCursorIndex((current) => Math.max(0, current - 1))
+    setPagination((prev) => ({
+      ...prev,
+      pageIndex: Math.max(
+        0,
+        Math.ceil(RESOURCE_TABLE_PAGE_SIZE / prev.pageSize) - 1
+      ),
+    }))
+  }, [cursorIndex, setPagination])
+  const handleSafeUseSSEChange = useCallback(
+    (pressed: boolean) => {
+      if (
+        pressed &&
+        resolvedResourceType === 'pods' &&
+        (!effectiveNamespace || effectiveNamespace === '_all')
+      ) {
+        toast.error('为了避免大集群卡顿，请先选择一个命名空间后再开启 Watch。')
+        return
+      }
+      handleUseSSEChange(pressed)
+    },
+    [effectiveNamespace, handleUseSSEChange, resolvedResourceType]
   )
 
   useEffect(() => {
@@ -442,6 +536,24 @@ function ResourceTableContent<T>({
 
   return (
     <div className="flex flex-col gap-3">
+      {!useSSE &&
+        (hasNextCursor || hasPreviousCursor || isAllNamespacesView) && (
+          <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            {isAllNamespacesView
+              ? `All Namespaces 会按游标分批读取 ${RESOURCE_TABLE_PAGE_SIZE} 条资源；每次只保留当前批次，避免大集群占满内存。搜索框默认搜索当前页，按 Enter 会按精确资源名向集群查询。`
+              : '为了保证大集群下应用不卡顿，当前只加载一批资源。可使用分页按钮继续加载下一批；输入框默认搜索当前页，按 Enter 会按精确资源名向集群查询。'}
+          </div>
+        )}
+      {serverNameFilter ? (
+        <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          已启用精确名称查询：{serverNameFilter}。清空搜索可回到分页浏览。
+        </div>
+      ) : null}
+      {warning ? (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          {warning}
+        </div>
+      ) : null}
       <ResourceTableToolbar
         table={table}
         resourceName={displayResourceName}
@@ -452,12 +564,16 @@ function ResourceTableContent<T>({
         onCreateClick={onCreateClick}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
+        serverNameFilter={serverNameFilter}
+        onApplyExactNameFilter={applyExactNameFilter}
+        onClearExactNameFilter={clearExactNameFilter}
         selectedNamespace={selectedNamespace}
         handleNamespaceChange={handleNamespaceChange}
+        requiresNamespace={requiresNamespace}
         useSSE={useSSE}
         isConnected={isConnected}
         refreshInterval={refreshInterval}
-        onUseSSEChange={handleUseSSEChange}
+        onUseSSEChange={handleSafeUseSSEChange}
         onRefreshIntervalChange={handleRefreshIntervalChange}
         selectedRowCount={table.getSelectedRowModel().rows.length}
         onOpenDeleteDialog={() => setDeleteDialogOpen(true)}
@@ -476,6 +592,10 @@ function ResourceTableContent<T>({
         searchQuery={searchQuery}
         pagination={pagination}
         setPagination={setPagination}
+        showAllPageSize={false}
+        hasNextPage={hasNextCursor}
+        onNextPage={handleNextDataPage}
+        onPreviousPage={hasPreviousCursor ? handlePreviousDataPage : undefined}
       />
 
       {/* Delete Confirmation Dialog */}

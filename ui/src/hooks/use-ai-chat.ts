@@ -5,6 +5,7 @@ import {
   appendCurrentClusterHeader,
   getCurrentCluster,
 } from '@/lib/current-cluster'
+import { appendDesktopAccessHeader } from '@/lib/desktop-access'
 import { withSubPath } from '@/lib/subpath'
 import {
   aiChatReducer,
@@ -460,6 +461,7 @@ export function useAIChat() {
         'Accept-Language': requestLanguage,
       }
       appendCurrentClusterHeader(headers)
+      appendDesktopAccessHeader(headers)
 
       const response = await fetch(withSubPath('/api/v1/ai/chat'), {
         method: 'POST',
@@ -631,6 +633,7 @@ export function useAIChat() {
           'Content-Type': 'application/json',
         }
         appendCurrentClusterHeader(headers)
+        appendDesktopAccessHeader(headers)
         const response = await fetch(withSubPath(opts.url), {
           method: 'POST',
           credentials: 'include',

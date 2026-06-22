@@ -406,4 +406,92 @@ var (
 			},
 		},
 	}
+
+	DesktopUser = User{
+		Username: "desktop",
+		Name:     "Desktop User",
+		Provider: AuthProviderDesktop,
+		Enabled:  true,
+		Roles: []common.Role{
+			{
+				Name:        "admin",
+				Description: "Local desktop administrator",
+				Clusters:    []string{"*"},
+				Resources:   []string{"*"},
+				Namespaces:  []string{"*"},
+				Verbs:       []string{"*"},
+			},
+		},
+	}
 )
+
+func EnsureDesktopUser() (*User, error) {
+	var user User
+	if err := DB.Where("username = ?", DesktopUser.Username).First(&user).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		user = DesktopUser
+		user.Password = utils.RandomString(32)
+		if err := AddSuperUser(&user); err != nil {
+			return nil, err
+		}
+		return desktopUserWithRoles(&user), nil
+	}
+
+	updates := map[string]interface{}{}
+	if user.Provider != AuthProviderDesktop {
+		updates["provider"] = AuthProviderDesktop
+		user.Provider = AuthProviderDesktop
+	}
+	if !user.Enabled {
+		updates["enabled"] = true
+		user.Enabled = true
+	}
+	if strings.TrimSpace(user.Name) == "" {
+		updates["name"] = DesktopUser.Name
+		user.Name = DesktopUser.Name
+	}
+	if len(updates) > 0 {
+		if err := DB.Model(&user).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		InvalidateUserCache(uint64(user.ID))
+	}
+
+	if err := ensureDesktopAdminRole(user.Username); err != nil {
+		return nil, err
+	}
+	return desktopUserWithRoles(&user), nil
+}
+
+func ensureDesktopAdminRole(username string) error {
+	adminRole, err := GetRoleByName(DefaultAdminRole.Name)
+	if err != nil {
+		return err
+	}
+	var count int64
+	if err := DB.Model(&RoleAssignment{}).
+		Where("role_id = ? AND subject_type = ? AND subject = ?", adminRole.ID, SubjectTypeUser, username).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	return DB.Create(&RoleAssignment{
+		RoleID:      adminRole.ID,
+		SubjectType: SubjectTypeUser,
+		Subject:     username,
+	}).Error
+}
+
+func desktopUserWithRoles(user *User) *User {
+	currentUser := *user
+	currentUser.Password = ""
+	currentUser.APIKey = ""
+	currentUser.MFASecret = ""
+	currentUser.MFAEnabled = false
+	currentUser.Roles = DesktopUser.Roles
+	return &currentUser
+}

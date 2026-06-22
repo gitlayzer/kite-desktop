@@ -1,4 +1,5 @@
 import { normalizeBasePath } from './base-path'
+import { appendDesktopAccessParam } from './desktop-access'
 
 declare global {
   interface Window {
@@ -31,7 +32,11 @@ export function getWebSocketUrl(path: string): string {
 
   // Ensure path starts with /
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
-  const fullPath = subPath ? `${subPath}${normalizedPath}` : normalizedPath
+  const [pathname, rawQuery = ''] = normalizedPath.split('?')
+  const params = new URLSearchParams(rawQuery)
+  appendDesktopAccessParam(params)
+  const query = params.toString()
+  const fullPath = subPath ? `${subPath}${pathname}` : pathname
 
-  return `${protocol}//${host}${fullPath}`
+  return `${protocol}//${host}${fullPath}${query ? `?${query}` : ''}`
 }

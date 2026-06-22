@@ -83,9 +83,26 @@ export const settingsSectionRegistry: SettingsSectionDefinition[] = [
 ]
 
 export function createSettingsTabs(t: TFunction) {
-  return settingsSectionRegistry.map((section) => ({
-    value: section.value,
-    label: t(section.labelKey, section.defaultLabel),
-    content: section.render(),
-  }))
+  return createSettingsTabsForMode(t, false)
+}
+
+export function createSettingsTabsForMode(t: TFunction, desktopMode: boolean) {
+  const hiddenDesktopSections = new Set([
+    'clusters',
+    'oauth',
+    'rbac',
+    'users',
+    'apikeys',
+    'audit',
+  ])
+
+  return settingsSectionRegistry
+    .filter(
+      (section) => !desktopMode || !hiddenDesktopSections.has(section.value)
+    )
+    .map((section) => ({
+      value: section.value,
+      label: t(section.labelKey, section.defaultLabel),
+      content: section.render(),
+    }))
 }

@@ -90,6 +90,15 @@ func (h *CRHandler) List(c *gin.Context) {
 	})
 
 	opts := &client.ListOptions{}
+	if limit, enabled, err := normalizeListLimit(c.Query("limit")); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	} else if enabled {
+		opts.Limit = limit
+	}
+	if c.Query("continue") != "" {
+		opts.Continue = c.Query("continue")
+	}
 
 	// Handle namespace parameter for namespaced resources
 	if crd.Spec.Scope == apiextensionsv1.NamespaceScoped {

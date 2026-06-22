@@ -48,6 +48,8 @@ export function ClusterStatsCards({
       label: t('nav.nodes'),
       value: stats.totalNodes,
       subValue: stats.readyNodes,
+      countPartial: stats.nodeCountPartial,
+      statsPartial: stats.nodeStatsPartial,
       icon: IconServer,
       color: 'text-blue-600 dark:text-blue-400',
       bgColor: 'bg-blue-50 dark:bg-blue-950/50',
@@ -57,6 +59,8 @@ export function ClusterStatsCards({
       label: t('nav.pods'),
       value: stats.totalPods,
       subValue: stats.runningPods,
+      countPartial: stats.podCountPartial,
+      statsPartial: stats.podStatsPartial,
       icon: IconBox,
       color: 'text-green-600 dark:text-green-400',
       bgColor: 'bg-green-50 dark:bg-green-950/50',
@@ -65,6 +69,8 @@ export function ClusterStatsCards({
     {
       label: t('nav.namespaces'),
       value: stats.totalNamespaces,
+      countPartial: stats.namespaceCountPartial,
+      statsPartial: false,
       icon: IconFolders,
       color: 'text-purple-600 dark:text-purple-400',
       bgColor: 'bg-purple-50 dark:bg-purple-950/50',
@@ -73,6 +79,8 @@ export function ClusterStatsCards({
     {
       label: t('nav.services'),
       value: stats.totalServices,
+      countPartial: stats.serviceCountPartial,
+      statsPartial: false,
       icon: IconNetwork,
       color: 'text-orange-600 dark:text-orange-400',
       bgColor: 'bg-orange-50 dark:bg-orange-950/50',
@@ -84,6 +92,7 @@ export function ClusterStatsCards({
     <div className="grid grid-cols-1 gap-4 @xl/main:grid-cols-2 @5xl/main:grid-cols-4">
       {statsConfig.map((stat) => {
         const Icon = stat.icon
+        const displayValue = stat.countPartial ? `≥${stat.value}` : stat.value
         return (
           <Card key={stat.label} className="@container/card">
             <CardHeader>
@@ -100,15 +109,25 @@ export function ClusterStatsCards({
                           to={stat.routePath}
                           className="hover:text-primary/80 hover:underline transition-colors cursor-pointer"
                         >
-                          {stat.value}
+                          {displayValue}
                         </Link>
                       ) : (
-                        stat.value
+                        displayValue
                       )}
                     </CardTitle>
                     <div className="text-sm text-muted-foreground">
-                      {stat.subValue === undefined ||
-                      stat.subValue === stat.value ? (
+                      {stat.countPartial ? (
+                        <div className="flex items-center gap-1">
+                          <IconAlertCircleFilled className="size-4 text-yellow-600 flex-shrink-0" />
+                          总数未返回
+                        </div>
+                      ) : stat.statsPartial ? (
+                        <div className="flex items-center gap-1">
+                          <IconAlertCircleFilled className="size-4 text-yellow-600 flex-shrink-0" />
+                          快速统计
+                        </div>
+                      ) : stat.subValue === undefined ||
+                        stat.subValue === stat.value ? (
                         <div className="flex items-center gap-1">
                           <IconCircleCheckFilled className="size-4 text-green-600 flex-shrink-0" />
                           All ready

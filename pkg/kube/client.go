@@ -111,7 +111,7 @@ func NewClient(config *rest.Config) (*K8sClient, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cacheEnabled := os.Getenv("DISABLE_CACHE") != "true"
+	cacheEnabled := os.Getenv("DISABLE_CACHE") != "true" && os.Getenv("KITE_DESKTOP_MODE") != "1" && os.Getenv("KITE_DESKTOP_MODE") != "true"
 
 	var c client.Client
 	if !cacheEnabled {

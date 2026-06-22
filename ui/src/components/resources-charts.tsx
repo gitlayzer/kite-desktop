@@ -10,8 +10,16 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 
+function percentage(value: number, total: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) {
+    return 0
+  }
+  return (value / total) * 100
+}
+
 export interface ResourceChartsProps {
   data?: OverviewData['resource']
+  partial?: boolean
   isLoading: boolean
   error: Error | null
   isError: boolean
@@ -19,7 +27,7 @@ export interface ResourceChartsProps {
 
 export function ResourceCharts(props: ResourceChartsProps) {
   const { t } = useTranslation()
-  const { isLoading, error, isError } = props
+  const { isLoading, error, isError, partial } = props
   const chartData = useMemo(() => {
     const { cpu, memory } = props.data || {
       cpu: { requested: 0, allocatable: 0, limited: 0 },
@@ -31,8 +39,8 @@ export function ResourceCharts(props: ResourceChartsProps) {
         request: cpu.requested / 1000,
         limit: cpu.limited / 1000,
         total: cpu.allocatable / 1000,
-        requestPercentage: (cpu.requested / cpu.allocatable) * 100,
-        limitPercentage: (cpu.limited / cpu.allocatable) * 100,
+        requestPercentage: percentage(cpu.requested, cpu.allocatable),
+        limitPercentage: percentage(cpu.limited, cpu.allocatable),
         unit: 'cores',
       },
       {
@@ -40,8 +48,8 @@ export function ResourceCharts(props: ResourceChartsProps) {
         request: memory.requested / 1024 / 1024 / 1024 / 1024,
         limit: memory.limited / 1024 / 1024 / 1024 / 1024,
         total: memory.allocatable / 1024 / 1024 / 1024 / 1024,
-        requestPercentage: (memory.requested / memory.allocatable) * 100,
-        limitPercentage: (memory.limited / memory.allocatable) * 100,
+        requestPercentage: percentage(memory.requested, memory.allocatable),
+        limitPercentage: percentage(memory.limited, memory.allocatable),
         unit: 'GiB',
       },
     ]
@@ -100,6 +108,7 @@ export function ResourceCharts(props: ResourceChartsProps) {
                 Requests: {resource.request.toFixed(1)} / Limits:{' '}
                 {resource.limit.toFixed(1)} / Total: {resource.total.toFixed(2)}{' '}
                 {resource.unit}
+                {partial ? ' · 快速统计' : ''}
               </CardDescription>
             </CardHeader>
             <CardContent>

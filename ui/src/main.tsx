@@ -15,9 +15,13 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryProvider>
       <AppearanceProvider
-        defaultTheme="system"
-        defaultColorTheme="default"
+        defaultTheme="dark"
+        themeStorageKey="kite-fixed-theme"
+        defaultColorTheme="claude"
+        colorThemeStorageKey="kite-fixed-color-theme"
         defaultFont="maple"
+        fontStorageKey="kite-fixed-font"
+        displayScaleStorageKey="kite-fixed-display-scale"
       >
         <AuthProvider>
           <SidebarConfigProvider>

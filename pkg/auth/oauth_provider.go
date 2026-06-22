@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,7 +83,13 @@ func discoverOAuthEndpoints(issuer, providerName string) (*struct {
 		}
 	}
 
-	resp, err := http.Get(wellKnown)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, wellKnown, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create well-known request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch well-known configuration: %w", err)
 	}

@@ -670,7 +670,22 @@
   },
   "errors": {
     "crdNotInstalledTitle": "资源类型不可用",
-    "crdNotInstalled": "此集群未安装 {{kind}} ({{version}})。请先安装对应的 CRD。"
+    "crdNotInstalled": "此集群未安装 {{kind}} ({{version}})。请先安装对应的 CRD。",
+    "crdNotInstalledSummary": "这个集群里还没有安装 {{kind}} 这种资源类型。",
+    "crdNotInstalledReason": "Kubernetes API Server 不认识 {{kind}}，通常是对应的 CRD 还没安装。",
+    "crdNotInstalledSuggestion": "请先安装对应组件或 CRD，安装完成后再回来刷新。",
+    "genericTitle": "加载失败",
+    "genericSummary": "{{resource}} 暂时没有加载出来。",
+    "genericSuggestion": "可以先点“重试”。如果还是失败，请展开技术详情，把里面的内容发给管理员排查。",
+    "technicalDetail": "技术详情",
+    "rbac": {
+      "title": "权限不够，加载失败",
+      "summary": "当前账号没有在{{scope}}{{verb}} {{resource}} 的权限。",
+      "reason": "Kubernetes 拒绝了这次请求：账号 {{user}} 不能在{{scope}}{{verb}} {{resource}}。",
+      "suggestion": "请换一个权限更高的 kubeconfig，或者让集群管理员给这个账号补上对应的 RBAC 权限后再重试。",
+      "scopeCluster": "整个集群范围内",
+      "scopeNamespace": " Namespace {{namespace}} 中"
+    }
   },
   "rbac": {
     "title": "RBAC 管理",
@@ -694,16 +709,19 @@
       "create": "创建",
       "update": "更新",
       "delete": "删除",
+      "list": "查看列表",
+      "watch": "监听",
       "log": "查看日志",
       "exec": "执行"
     }
   },
   "settings": {
     "title": "设置",
-    "description": "管理集群、角色和权限",
+    "description": "管理通用配置和模板",
     "tabs": {
       "clusters": "集群",
       "general": "通用",
+      "templates": "模板",
       "oauth": "认证",
       "rbac": "RBAC",
       "users": "用户",
@@ -724,20 +742,6 @@
         "maxTokens": "最大 Token 数"
       }
     },
-    "kubectl": {
-      "title": "Kubectl",
-      "description": "启用 kubectl 终端，配置运行镜像。",
-      "form": {
-        "image": "镜像"
-      }
-    },
-    "nodeTerminal": {
-      "title": "节点终端",
-      "description": "配置 Node Terminal 使用的运行镜像。",
-      "form": {
-        "image": "镜像"
-      }
-    },
     "runtime": {
       "title": "运行时",
       "description": "配置数据统计和版本检查。",
@@ -746,19 +750,9 @@
         "enableVersionCheck": "启用版本检查"
       }
     },
-    "loginPrompt": {
-      "title": "登录提示",
-      "description": "在登录页展示自定义提示。",
-      "form": {
-        "message": "提示内容",
-        "placeholder": "留空则不展示登录提示"
-      }
-    },
     "errors": {
       "modelRequired": "模型不能为空",
-      "apiKeyRequired": "启用 AI Agent 时必须配置 API Key",
-      "kubectlImageRequired": "启用 kubectl 时必须配置镜像",
-      "nodeTerminalImageRequired": "节点终端镜像不能为空"
+      "apiKeyRequired": "启用 AI Agent 时必须配置 API Key"
     },
     "messages": {
       "updated": "通用设置已更新"

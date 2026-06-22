@@ -14,12 +14,14 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
-func setupStatic(r *gin.Engine) {
+func setupStatic(r *gin.Engine, guards ...gin.HandlerFunc) {
 	base := common.Base
 	if base != "" && base != "/" {
-		r.GET("/", func(c *gin.Context) {
+		handlers := append([]gin.HandlerFunc{}, guards...)
+		handlers = append(handlers, func(c *gin.Context) {
 			c.Redirect(http.StatusFound, base+"/")
 		})
+		r.GET("/", handlers...)
 	}
 
 	assetsFS, err := fs.Sub(staticFiles, "static/assets")
@@ -28,6 +30,7 @@ func setupStatic(r *gin.Engine) {
 	}
 
 	assetsGroup := r.Group(base + "/assets")
+	assetsGroup.Use(guards...)
 	assetsGroup.Use(middleware.StaticCache())
 	assetsGroup.StaticFS("/", http.FS(assetsFS))
 
@@ -36,6 +39,13 @@ func setupStatic(r *gin.Engine) {
 		if len(path) >= len(base)+5 && path[len(base):len(base)+5] == "/api/" {
 			c.JSON(http.StatusNotFound, gin.H{"error": "API endpoint not found"})
 			return
+		}
+
+		for _, guard := range guards {
+			guard(c)
+			if c.IsAborted() {
+				return
+			}
 		}
 
 		content, err := staticFiles.ReadFile("static/index.html")

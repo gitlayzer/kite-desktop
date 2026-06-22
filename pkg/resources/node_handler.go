@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 
 	"github.com/gin-gonic/gin"
@@ -275,20 +276,23 @@ func (h *NodeHandler) UntaintNode(c *gin.Context) {
 
 func (h *NodeHandler) List(c *gin.Context) {
 	cs := c.MustGet("cluster").(*cluster.ClientSet)
-	var nodeMetrics metricsv1.NodeMetricsList
 
 	var nodes corev1.NodeList
-	if err := cs.K8sClient.List(c.Request.Context(), &nodes); err != nil {
+	listOpts, err := buildNodeListOptions(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := cs.K8sClient.List(c.Request.Context(), &nodes, listOpts...); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list nodes: " + err.Error()})
 		return
 	}
 
-	if err := cs.K8sClient.List(c.Request.Context(), &nodeMetrics); err != nil {
-		klog.Warningf("Failed to list node metrics: %v", err)
+	nodeMetricsMap := getNodeMetricsForPage(c.Request.Context(), cs.K8sClient, nodes.Items)
+	nodeResourceRequests := map[string]common.MetricsCell{}
+	if shouldIncludeNodePodRequests(c) {
+		nodeResourceRequests = listNodeResourceRequests(c.Request.Context(), cs.K8sClient, nodes.Items)
 	}
-
-	nodeMetricsMap := buildNodeMetricsMap(nodeMetrics.Items)
-	nodeResourceRequests := listNodeResourceRequests(c.Request.Context(), cs.K8sClient, nodes.Items)
 
 	result := &common.NodeListWithMetrics{
 		TypeMeta: nodes.TypeMeta,
@@ -326,6 +330,29 @@ func (h *NodeHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func buildNodeListOptions(c *gin.Context) ([]client.ListOption, error) {
+	var listOpts []client.ListOption
+	if limit, enabled, err := normalizeListLimit(c.Query("limit")); err != nil {
+		return nil, err
+	} else if enabled {
+		listOpts = append(listOpts, client.Limit(limit))
+	}
+	if continueToken := c.Query("continue"); continueToken != "" {
+		listOpts = append(listOpts, client.Continue(continueToken))
+	}
+	return listOpts, nil
+}
+
+func shouldIncludeNodePodRequests(c *gin.Context) bool {
+	switch c.Query("includePodRequests") {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	return os.Getenv("KITE_DESKTOP_MODE") != "1" && os.Getenv("KITE_DESKTOP_MODE") != "true"
+}
+
 func (h *NodeHandler) registerCustomRoutes(group *gin.RouterGroup) {
 	group.POST("/_all/:name/drain", h.DrainNode)
 	group.POST("/_all/:name/cordon", h.CordonNode)
@@ -334,55 +361,73 @@ func (h *NodeHandler) registerCustomRoutes(group *gin.RouterGroup) {
 	group.POST("/_all/:name/untaint", h.UntaintNode)
 }
 
-func buildNodeMetricsMap(nodeMetrics []metricsv1.NodeMetrics) map[string]metricsv1.NodeMetrics {
-	metricsMap := make(map[string]metricsv1.NodeMetrics, len(nodeMetrics))
-	for _, nodeMetric := range nodeMetrics {
-		metricsMap[nodeMetric.Name] = nodeMetric
+func getNodeMetricsForPage(ctx context.Context, k8sClient *kube.K8sClient, nodes []corev1.Node) map[string]metricsv1.NodeMetrics {
+	metricsMap := make(map[string]metricsv1.NodeMetrics, len(nodes))
+	for i := range nodes {
+		node := &nodes[i]
+		var nodeMetric metricsv1.NodeMetrics
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: node.Name}, &nodeMetric); err != nil {
+			if !errors.IsNotFound(err) {
+				klog.Warningf("Failed to get node metrics for %s: %v", node.Name, err)
+			}
+			continue
+		}
+		metricsMap[node.Name] = nodeMetric
 	}
 	return metricsMap
 }
 
 func listNodeResourceRequests(ctx context.Context, k8sClient *kube.K8sClient, nodes []corev1.Node) map[string]common.MetricsCell {
-	if !k8sClient.CacheEnabled {
-		return listNodeResourceRequestsFromAllPods(ctx, k8sClient)
-	}
-
 	nodeResourceRequests := make(map[string]common.MetricsCell, len(nodes))
 	for _, node := range nodes {
-		var nodePods corev1.PodList
-		if err := k8sClient.List(ctx, &nodePods, client.MatchingFields{"spec.nodeName": node.Name}); err != nil {
-			klog.Warningf("Failed to list pods for node %s: %v", node.Name, err)
+		if k8sClient.CacheEnabled {
+			var nodePods corev1.PodList
+			if err := k8sClient.List(ctx, &nodePods, client.MatchingFields{"spec.nodeName": node.Name}, client.Limit(maxListLimit)); err != nil {
+				klog.Warningf("Failed to list pods for node %s: %v", node.Name, err)
+				continue
+			}
+
+			var metrics common.MetricsCell
+			for i := range nodePods.Items {
+				addPodResources(&metrics, &nodePods.Items[i])
+			}
+			nodeResourceRequests[node.Name] = metrics
 			continue
 		}
 
-		var metrics common.MetricsCell
-		for i := range nodePods.Items {
-			addPodResources(&metrics, &nodePods.Items[i])
-		}
-		nodeResourceRequests[node.Name] = metrics
+		nodeResourceRequests[node.Name] = listNodePodsUncached(ctx, k8sClient, node.Name)
 	}
 	return nodeResourceRequests
 }
 
-func listNodeResourceRequestsFromAllPods(ctx context.Context, k8sClient *kube.K8sClient) map[string]common.MetricsCell {
-	var allPods corev1.PodList
-	if err := k8sClient.List(ctx, &allPods); err != nil {
-		klog.Warningf("Failed to list pods: %v", err)
-		return map[string]common.MetricsCell{}
-	}
+func listNodePodsUncached(ctx context.Context, k8sClient *kube.K8sClient, nodeName string) common.MetricsCell {
+	var metrics common.MetricsCell
+	var continueToken string
 
-	nodeResourceRequests := make(map[string]common.MetricsCell)
-	for i := range allPods.Items {
-		pod := &allPods.Items[i]
-		if pod.Spec.NodeName == "" {
-			continue
+	for {
+		var nodePods corev1.PodList
+		listOpts := []client.ListOption{
+			client.MatchingFields{"spec.nodeName": nodeName},
+			client.Limit(maxListLimit),
+		}
+		if continueToken != "" {
+			listOpts = append(listOpts, client.Continue(continueToken))
 		}
 
-		metrics := nodeResourceRequests[pod.Spec.NodeName]
-		addPodResources(&metrics, pod)
-		nodeResourceRequests[pod.Spec.NodeName] = metrics
+		if err := k8sClient.List(ctx, &nodePods, listOpts...); err != nil {
+			klog.Warningf("Failed to list pods for node %s: %v", nodeName, err)
+			return metrics
+		}
+
+		for i := range nodePods.Items {
+			addPodResources(&metrics, &nodePods.Items[i])
+		}
+
+		continueToken = nodePods.GetContinue()
+		if continueToken == "" {
+			return metrics
+		}
 	}
-	return nodeResourceRequests
 }
 
 func addPodResources(metrics *common.MetricsCell, pod *corev1.Pod) {

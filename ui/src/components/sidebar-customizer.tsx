@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useSidebarConfig } from '@/contexts/sidebar-config-context'
 import {
@@ -55,8 +62,10 @@ const DRAG_SCROLL_MAX_STEP = 12
 
 export function SidebarCustomizer({
   onOpenChange,
+  trigger,
 }: {
   onOpenChange?: (open: boolean) => void
+  trigger?: ReactNode
 }) {
   const { t } = useTranslation()
   const { user, globalSidebarPreference } = useAuth()
@@ -303,21 +312,23 @@ export function SidebarCustomizer({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        <DropdownMenuItem
-          className="cursor-pointer"
-          onSelect={(e) => {
-            e.preventDefault()
-            setOpen(true)
-          }}
-        >
-          <PanelLeftOpen className="h-4 w-4" />
-          <span>
-            {t('common.actions.customizeSidebar', 'Customize Sidebar')}
-          </span>
-          {hasUpdate && (
-            <span className="ml-auto h-2 w-2 rounded-full bg-red-500" />
-          )}
-        </DropdownMenuItem>
+        {trigger ?? (
+          <DropdownMenuItem
+            className="cursor-pointer"
+            onSelect={(e) => {
+              e.preventDefault()
+              setOpen(true)
+            }}
+          >
+            <PanelLeftOpen className="h-4 w-4" />
+            <span>
+              {t('common.actions.customizeSidebar', 'Customize Sidebar')}
+            </span>
+            {hasUpdate && (
+              <span className="ml-auto h-2 w-2 rounded-full bg-red-500" />
+            )}
+          </DropdownMenuItem>
+        )}
       </DialogTrigger>
 
       <DialogContent className="!max-w-4xl max-h-[calc(100dvh-1rem)] p-0">

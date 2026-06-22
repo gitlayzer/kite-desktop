@@ -7,6 +7,7 @@ import (
 
 const AuthProviderPassword = "password"
 const AuthProviderLDAP = "ldap"
+const AuthProviderDesktop = "desktop"
 
 const ReservedOAuthProviderNamePassword = AuthProviderPassword
 const ReservedOAuthProviderNameLDAP = AuthProviderLDAP

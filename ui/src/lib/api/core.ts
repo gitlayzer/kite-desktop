@@ -26,11 +26,16 @@ import {
 import { getResourceQueryKey } from '@/lib/resource-metadata'
 
 import { API_BASE_URL, apiClient } from '../api-client'
-import { appendCurrentClusterParam } from '../current-cluster'
+import {
+  appendCurrentClusterParam,
+  getCurrentCluster,
+} from '../current-cluster'
 import { withSubPath } from '../subpath'
 import { fetchAPI } from './shared'
 
 type ResourcesItems<T extends ResourceType> = ResourcesTypeMap[T]['items']
+const RESOURCE_WATCH_CACHE_LIMIT = 1000
+const getClusterQueryKey = () => getCurrentCluster() || '_no_cluster'
 
 export const fetchResources = <T>(
   resource: string,
@@ -41,6 +46,7 @@ export const fetchResources = <T>(
     labelSelector?: string
     fieldSelector?: string
     reduce?: boolean
+    queryParams?: Record<string, string | number | boolean | undefined>
   }
 ): Promise<T> => {
   let endpoint = namespace ? `/${resource}/${namespace}` : `/${resource}`
@@ -61,6 +67,11 @@ export const fetchResources = <T>(
   if (opts?.reduce) {
     params.append('reduce', 'true')
   }
+  Object.entries(opts?.queryParams || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      params.append(key, String(value))
+    }
+  })
 
   if (params.toString()) {
     endpoint += `?${params.toString()}`
@@ -189,8 +200,9 @@ export const useHelmReleaseAutoUpgrade = (
   name: string,
   options?: { enabled?: boolean; staleTime?: number }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: ['helmrelease-auto-upgrade', namespace, name],
+    queryKey: ['helmrelease-auto-upgrade', clusterQueryKey, namespace, name],
     queryFn: () => fetchHelmReleaseAutoUpgrade(namespace, name),
     enabled: (options?.enabled ?? true) && !!namespace && !!name,
     staleTime: options?.staleTime || 30000,
@@ -231,8 +243,9 @@ export const useHelmReleaseHistory = (
   name: string,
   options?: { enabled?: boolean; staleTime?: number }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: ['helmrelease-history', namespace, name],
+    queryKey: ['helmrelease-history', clusterQueryKey, namespace, name],
     queryFn: () => fetchHelmReleaseHistory(namespace, name),
     enabled: options?.enabled ?? true,
     staleTime: options?.staleTime || 30000,
@@ -614,8 +627,9 @@ export const useResourcesEvents = <T extends ResourceType>(
   name: string,
   namespace?: string
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: ['resource-events', resource, namespace, name],
+    queryKey: ['resource-events', clusterQueryKey, resource, namespace, name],
     queryFn: () => {
       const endpoint =
         '/events/resources?' +
@@ -638,33 +652,86 @@ export const useResources = <T extends ResourceType>(
   options?: {
     staleTime?: number
     limit?: number
+    continueToken?: string
     labelSelector?: string
     fieldSelector?: string
     refreshInterval?: number
     disable?: boolean
     reduce?: boolean
+    queryParams?: Record<string, string | number | boolean | undefined>
   }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
     queryKey: [
       resource,
+      clusterQueryKey,
       namespace,
       options?.limit,
+      options?.continueToken,
       options?.labelSelector,
       options?.fieldSelector,
+      options?.reduce,
+      options?.queryParams,
     ],
     queryFn: () => {
       return fetchResources<ResourcesTypeMap[T]>(resource, namespace, {
         limit: options?.limit,
-        continueToken: undefined,
+        continueToken: options?.continueToken,
         labelSelector: options?.labelSelector,
         fieldSelector: options?.fieldSelector,
         reduce: options?.reduce,
+        queryParams: options?.queryParams,
       })
     },
     enabled: !options?.disable,
     select: (data: ResourcesTypeMap[T]): ResourcesItems<T> => data.items,
     placeholderData: (prevData) => prevData,
+    refetchInterval: options?.refreshInterval || 0,
+    staleTime: options?.staleTime || (resource === 'crds' ? 5000 : 1000),
+  })
+}
+
+export const useResourcesPage = <T extends ResourceType>(
+  resource: T,
+  namespace?: string,
+  options?: {
+    staleTime?: number
+    limit?: number
+    continueToken?: string
+    labelSelector?: string
+    fieldSelector?: string
+    refreshInterval?: number
+    disable?: boolean
+    reduce?: boolean
+    queryParams?: Record<string, string | number | boolean | undefined>
+  }
+) => {
+  const clusterQueryKey = getClusterQueryKey()
+  return useQuery({
+    queryKey: [
+      resource,
+      clusterQueryKey,
+      namespace,
+      'page',
+      options?.limit,
+      options?.continueToken,
+      options?.labelSelector,
+      options?.fieldSelector,
+      options?.reduce,
+      options?.queryParams,
+    ],
+    queryFn: () => {
+      return fetchResources<ResourcesTypeMap[T]>(resource, namespace, {
+        limit: options?.limit,
+        continueToken: options?.continueToken,
+        labelSelector: options?.labelSelector,
+        fieldSelector: options?.fieldSelector,
+        reduce: options?.reduce,
+        queryParams: options?.queryParams,
+      })
+    },
+    enabled: !options?.disable,
     refetchInterval: options?.refreshInterval || 0,
     staleTime: options?.staleTime || (resource === 'crds' ? 5000 : 1000),
   })
@@ -678,12 +745,15 @@ export function useResourcesWatch<T extends ResourceType>(
     labelSelector?: string
     fieldSelector?: string
     reduce?: boolean
+    queryParams?: Record<string, string | number | boolean | undefined>
     enabled?: boolean
   }
 ) {
+  const clusterQueryKey = getClusterQueryKey()
   const [data, setData] = useState<ResourcesItems<T> | undefined>(undefined)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+  const [warning, setWarning] = useState<string | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const eventSourceRef = useRef<EventSource | null>(null)
 
@@ -695,16 +765,23 @@ export function useResourcesWatch<T extends ResourceType>(
       params.append('labelSelector', options.labelSelector)
     if (options?.fieldSelector)
       params.append('fieldSelector', options.fieldSelector)
+    Object.entries(options?.queryParams || {}).forEach(([key, value]) => {
+      if (value !== undefined) {
+        params.append(key, String(value))
+      }
+    })
     appendCurrentClusterParam(params)
     return withSubPath(
       `${API_BASE_URL}/${resource}/${ns}/watch?${params.toString()}`
     )
   }, [
     resource,
+    clusterQueryKey,
     namespace,
     options?.reduce,
     options?.labelSelector,
     options?.fieldSelector,
+    options?.queryParams,
   ])
 
   const disconnect = useCallback(() => {
@@ -720,6 +797,7 @@ export function useResourcesWatch<T extends ResourceType>(
     if (options?.enabled === false) return
     const url = buildUrl()
     setError(null)
+    setWarning(null)
     setIsConnected(false)
 
     try {
@@ -746,6 +824,9 @@ export function useResourcesWatch<T extends ResourceType>(
           )
           if (idx >= 0) arr[idx] = object
           else arr.unshift(object)
+          if (arr.length > RESOURCE_WATCH_CACHE_LIMIT) {
+            arr.length = RESOURCE_WATCH_CACHE_LIMIT
+          }
           return arr as ResourcesItems<T>
         })
       }
@@ -782,6 +863,14 @@ export function useResourcesWatch<T extends ResourceType>(
         setIsLoading(false)
         setIsConnected(false)
       })
+      es.addEventListener('warning', (e: MessageEvent) => {
+        try {
+          const payload = JSON.parse(e.data)
+          setWarning(payload?.warning || payload?.message || 'Watch warning')
+        } catch {
+          setWarning('Watch warning')
+        }
+      })
       es.addEventListener('close', () => {
         setIsConnected(false)
       })
@@ -809,7 +898,15 @@ export function useResourcesWatch<T extends ResourceType>(
     }
   }, [connect, disconnect, options?.enabled])
 
-  return { data, isLoading, error, isConnected, refetch, stop: disconnect }
+  return {
+    data,
+    isLoading,
+    error,
+    warning,
+    isConnected,
+    refetch,
+    stop: disconnect,
+  }
 }
 
 export const fetchResource = <T>(
@@ -829,8 +926,9 @@ export const useResource = <T extends keyof ResourceTypeMap>(
   options?: { staleTime?: number; refreshInterval?: number }
 ) => {
   const ns = namespace || '_all'
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: getResourceQueryKey(resource, ns, name),
+    queryKey: [clusterQueryKey, ...getResourceQueryKey(resource, ns, name)],
     queryFn: () => {
       return fetchResource<ResourceTypeMap[T]>(resource, name, ns)
     },
@@ -856,8 +954,9 @@ export const useDescribe = (
   namespace?: string,
   options?: { staleTime?: number; enabled?: boolean }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: [resourceType, name, namespace, 'describe'],
+    queryKey: [clusterQueryKey, resourceType, name, namespace, 'describe'],
     queryFn: () => fetchDescribe(resourceType, name, namespace),
     enabled: (options?.enabled ?? true) && !!name,
     staleTime: options?.staleTime || 0,
@@ -1005,8 +1104,9 @@ export function useRelatedResources(
   name: string,
   namespace?: string
 ) {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: ['related-resources', resource, name, namespace],
+    queryKey: ['related-resources', clusterQueryKey, resource, name, namespace],
     queryFn: () => getRelatedResources(resource, name, namespace),
     staleTime: 60 * 1000, // 1 min
     placeholderData: (prev) => prev,
@@ -1032,9 +1132,11 @@ export const useResourceHistory = (
   pageSize: number = 10,
   options?: { enabled?: boolean; staleTime?: number }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
     queryKey: [
       'resource-history',
+      clusterQueryKey,
       resourceType,
       namespace,
       name,
@@ -1054,8 +1156,16 @@ export const usePodFiles = (
   path: string,
   options?: { enabled?: boolean }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: ['pod-files', namespace, podName, container, path],
+    queryKey: [
+      'pod-files',
+      clusterQueryKey,
+      namespace,
+      podName,
+      container,
+      path,
+    ],
     queryFn: () => podListFiles(namespace, podName, container, path),
     enabled: options?.enabled !== false,
     staleTime: 10000, // 10 seconds cache

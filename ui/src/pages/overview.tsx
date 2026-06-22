@@ -31,8 +31,9 @@ export function Overview() {
   } = useResourceUsageHistory(timeRange, {
     enabled: overview?.prometheusEnabled ?? false,
   })
+  const hasBlockingOverviewError = Boolean(error && !overview)
 
-  if (error) {
+  if (hasBlockingOverviewError) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-2">
         <h2 className="text-lg font-semibold">{t('overview.failedToLoad')}</h2>
@@ -57,9 +58,10 @@ export function Overview() {
       <div className="grid grid-cols-1 gap-4 @5xl/main:grid-cols-2">
         <ResourceCharts
           data={overview?.resource}
+          partial={overview?.resourcePartial}
           isLoading={isLoading}
           error={error}
-          isError={isError}
+          isError={isError && !overview}
         />
         <RecentEvents />
       </div>

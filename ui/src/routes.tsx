@@ -1,12 +1,12 @@
-import { createBrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, Navigate } from 'react-router-dom'
 
 import App, { StandaloneAIChatApp } from './App'
+import { ClusterEntryRoute } from './components/cluster-entry-route'
 import { InitCheckRoute } from './components/init-check-route'
 import { ProtectedRoute } from './components/protected-route'
+import { RequireClusterSelection } from './components/require-cluster-selection'
 import { getSubPath } from './lib/subpath'
 import { CRListPage } from './pages/cr-list-page'
-import { HelmChartDetailPage } from './pages/helm-chart-detail-page'
-import { HelmChartListPage } from './pages/helm-chart-list-page'
 import { InitializationPage } from './pages/initialization'
 import { LoginPage } from './pages/login'
 import { Overview } from './pages/overview'
@@ -52,47 +52,79 @@ export const router = createBrowserRouter(
       children: [
         {
           index: true,
-          element: <Overview />,
+          element: <ClusterEntryRoute redirectWhenSelected />,
+        },
+        {
+          path: 'clusters',
+          element: <ClusterEntryRoute />,
         },
         {
           path: 'dashboard',
-          element: <Overview />,
+          element: (
+            <RequireClusterSelection>
+              <Overview />
+            </RequireClusterSelection>
+          ),
         },
         {
           path: 'settings',
           element: <SettingsPage />,
         },
         {
-          path: 'crds/:crd',
-          element: <CRListPage />,
-        },
-        {
           path: 'charts',
-          element: <HelmChartListPage />,
+          element: <Navigate to="/dashboard" replace />,
         },
         {
           path: 'charts/:repository/:name',
-          element: <HelmChartDetailPage />,
+          element: <Navigate to="/dashboard" replace />,
+        },
+        {
+          path: 'crds/:crd',
+          element: (
+            <RequireClusterSelection>
+              <CRListPage />
+            </RequireClusterSelection>
+          ),
         },
         {
           path: 'crds/:resource/:namespace/:name',
-          element: <ResourceDetail />,
+          element: (
+            <RequireClusterSelection>
+              <ResourceDetail />
+            </RequireClusterSelection>
+          ),
         },
         {
           path: 'crds/:resource/:name',
-          element: <ResourceDetail />,
+          element: (
+            <RequireClusterSelection>
+              <ResourceDetail />
+            </RequireClusterSelection>
+          ),
         },
         {
           path: ':resource/:name',
-          element: <ResourceDetail />,
+          element: (
+            <RequireClusterSelection>
+              <ResourceDetail />
+            </RequireClusterSelection>
+          ),
         },
         {
           path: ':resource',
-          element: <ResourceList />,
+          element: (
+            <RequireClusterSelection>
+              <ResourceList />
+            </RequireClusterSelection>
+          ),
         },
         {
           path: ':resource/:namespace/:name',
-          element: <ResourceDetail />,
+          element: (
+            <RequireClusterSelection>
+              <ResourceDetail />
+            </RequireClusterSelection>
+          ),
         },
       ],
     },

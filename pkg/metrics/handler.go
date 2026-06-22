@@ -27,6 +27,8 @@ var validDurations = map[string]bool{
 	"24h": true,
 }
 
+const metricsLabelSelectorLimit int64 = 100
+
 func NewHandler() *Handler {
 	h := &Handler{
 		metricsServerCache: make(map[string][]prometheus.UsageDataPoint),
@@ -182,7 +184,10 @@ func (h *Handler) fetchPodMetricsFromMetricsServer(c *gin.Context, namespace, po
 	}
 
 	if labelSelector != "" {
-		listOpts := metav1.ListOptions{LabelSelector: labelSelector}
+		listOpts := metav1.ListOptions{
+			LabelSelector: labelSelector,
+			Limit:         metricsLabelSelectorLimit,
+		}
 		podMetricsList, err := cs.K8sClient.MetricsClient.MetricsV1beta1().PodMetricses(namespace).List(ctx, listOpts)
 		if err != nil {
 			return nil, err

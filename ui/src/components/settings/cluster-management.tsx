@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Cluster } from '@/types/api'
+import { useCluster } from '@/hooks/use-cluster'
 import {
   ClusterCreateRequest,
   ClusterUpdateRequest,
@@ -27,9 +28,14 @@ import { DeleteConfirmationDialog } from '@/components/delete-confirmation-dialo
 import { Action, ActionTable } from '../action-table'
 import { ClusterDialog } from './cluster-dialog'
 
-export function ClusterManagement() {
+interface ClusterManagementProps {
+  embedded?: boolean
+}
+
+export function ClusterManagement({ embedded = false }: ClusterManagementProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const { currentCluster, refreshClusters, setCurrentCluster } = useCluster()
 
   const { data: clusters = [], isLoading, error } = useClusterList()
 
@@ -163,7 +169,6 @@ export function ClusterManagement() {
             {t('common.actions.delete', 'Delete')}
           </div>
         ),
-        shouldDisable: (cluster) => cluster.isDefault,
         onClick: (cluster) => {
           setDeletingCluster(cluster)
         },
@@ -172,10 +177,21 @@ export function ClusterManagement() {
     [t]
   )
 
+  const refreshClusterData = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['cluster-list'] }),
+      queryClient.invalidateQueries({ queryKey: ['clusters'] }),
+    ])
+    await refreshClusters()
+  }, [queryClient, refreshClusters])
+
   const createMutation = useMutation({
     mutationFn: createCluster,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['cluster-list'] })
+    onSuccess: async (_result, clusterData) => {
+      await refreshClusterData()
+      if (clusterData.isDefault && currentCluster) {
+        await setCurrentCluster(clusterData.name)
+      }
       toast.success(
         t('clusterManagement.messages.created', 'Cluster created successfully')
       )
@@ -196,8 +212,20 @@ export function ClusterManagement() {
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: ClusterUpdateRequest }) =>
       updateCluster(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['cluster-list'] })
+    onSuccess: async (_result, variables) => {
+      const previousName = editingCluster?.name
+      const nextName = variables.data.name || previousName
+      await refreshClusterData()
+      if (variables.data.isDefault && nextName && currentCluster) {
+        await setCurrentCluster(nextName)
+      } else if (
+        previousName &&
+        nextName &&
+        previousName !== nextName &&
+        currentCluster === previousName
+      ) {
+        await setCurrentCluster(nextName)
+      }
       toast.success(
         t('clusterManagement.messages.updated', 'Cluster updated successfully')
       )
@@ -218,8 +246,8 @@ export function ClusterManagement() {
   // Delete cluster mutation
   const deleteMutation = useMutation({
     mutationFn: deleteCluster,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['cluster-list'] })
+    onSuccess: async () => {
+      await refreshClusterData()
       toast.success(
         t('clusterManagement.messages.deleted', 'Cluster deleted successfully')
       )
@@ -276,10 +304,10 @@ export function ClusterManagement() {
 
   return (
     <div className="space-y-6">
-      <Card>
+      <Card className={embedded ? 'border-0 bg-transparent shadow-none' : ''}>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <div>
+            <div className={embedded ? 'sr-only' : undefined}>
               <CardTitle className="flex items-center gap-2">
                 <IconServer className="h-5 w-5" />
                 {t('clusterManagement.title', 'Cluster Management')}

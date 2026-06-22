@@ -1,5 +1,6 @@
 // API client with authentication support
 import { appendCurrentClusterHeader } from './current-cluster'
+import { appendDesktopAccessHeader } from './desktop-access'
 import { withSubPath } from './subpath'
 
 export interface ApiRequestOptions extends RequestInit {
@@ -21,9 +22,13 @@ class ApiClient {
     }
 
     this.isRefreshing = true
+    const headers: Record<string, string> = {}
+    appendDesktopAccessHeader(headers)
+
     this.refreshPromise = fetch(withSubPath('/api/auth/refresh'), {
       method: 'POST',
       credentials: 'include',
+      headers,
     })
       .then((response) => {
         if (!response.ok) {
@@ -54,6 +59,7 @@ class ApiClient {
     }
 
     appendCurrentClusterHeader(headers)
+    appendDesktopAccessHeader(headers)
 
     const defaultOptions: RequestInit = {
       credentials: 'include',

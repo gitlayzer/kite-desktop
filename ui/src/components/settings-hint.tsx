@@ -9,6 +9,7 @@ import {
 import { useTranslation } from 'react-i18next'
 import { Link } from 'react-router-dom'
 
+import { useAuth } from '@/contexts/auth-context'
 import {
   useClusterList,
   useLDAPSetting,
@@ -31,6 +32,7 @@ interface SettingsHintProps {
 
 export function SettingsHint({ onDismiss }: SettingsHintProps) {
   const { t } = useTranslation()
+  const { capabilities } = useAuth()
   const [isDismissed, setIsDismissed] = useState(
     () => localStorage.getItem('settings-hint-dismissed') === 'true'
   )
@@ -45,7 +47,11 @@ export function SettingsHint({ onDismiss }: SettingsHintProps) {
     oauthProviders.length > 0 || ldapSetting?.enabled === true
   const hasRoles = roles.length > 2
 
-  if ((hasP8S && hasOAuthProviders && hasRoles) || isDismissed) {
+  if (
+    capabilities.desktopMode ||
+    (hasP8S && hasOAuthProviders && hasRoles) ||
+    isDismissed
+  ) {
     return null
   }
 

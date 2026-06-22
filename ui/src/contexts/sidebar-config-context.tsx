@@ -10,6 +10,7 @@ import * as React from 'react'
 import { type Icon, type IconProps } from '@tabler/icons-react'
 
 import { SidebarConfig, SidebarGroup, SidebarItem } from '@/types/sidebar'
+import { appendDesktopAccessHeader } from '@/lib/desktop-access'
 import { withSubPath } from '@/lib/subpath'
 
 import { useAuth } from './auth-context'
@@ -19,11 +20,42 @@ import {
   SIDEBAR_CONFIG_VERSION,
 } from './sidebar-config-defaults'
 
+const REMOVED_SIDEBAR_URLS = new Set(['/charts'])
+
 function toggleInArray(arr: string[], item: string): string[] {
   const set = new Set(arr)
   if (set.has(item)) set.delete(item)
   else set.add(item)
   return Array.from(set)
+}
+
+function removeDeletedSidebarItems(config: SidebarConfig): SidebarConfig {
+  const removedItemIds = new Set<string>()
+  const groups = config.groups.map((group) => {
+    const items = group.items.filter((item) => {
+      const remove = REMOVED_SIDEBAR_URLS.has(item.url)
+      if (remove) {
+        removedItemIds.add(item.id)
+      }
+      return !remove
+    })
+
+    return {
+      ...group,
+      items: items.map((item, index) => ({ ...item, order: index })),
+    }
+  })
+
+  if (removedItemIds.size === 0) {
+    return config
+  }
+
+  return {
+    ...config,
+    groups,
+    hiddenItems: config.hiddenItems.filter((id) => !removedItemIds.has(id)),
+    pinnedItems: config.pinnedItems.filter((id) => !removedItemIds.has(id)),
+  }
 }
 
 function toggleGroupField(
@@ -92,9 +124,10 @@ export const SidebarConfigProvider: React.FC<SidebarConfigProviderProps> = ({
   const loadConfig = useCallback(async () => {
     if (user && user.sidebar_preference && user.sidebar_preference != '') {
       const userConfig = JSON.parse(user.sidebar_preference)
-      setConfig(userConfig)
+      const sanitizedConfig = removeDeletedSidebarItems(userConfig)
+      setConfig(sanitizedConfig)
 
-      const currentVersion = userConfig.version || 0
+      const currentVersion = sanitizedConfig.version || 0
       if (currentVersion < SIDEBAR_CONFIG_VERSION) {
         setHasUpdate(true)
       }
@@ -117,13 +150,16 @@ export const SidebarConfigProvider: React.FC<SidebarConfigProviderProps> = ({
           version: SIDEBAR_CONFIG_VERSION,
         }
 
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        }
+        appendDesktopAccessHeader(headers)
+
         const response = await fetch(
           withSubPath('/api/users/sidebar_preference'),
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers,
             credentials: 'include',
             body: JSON.stringify({
               sidebar_preference: JSON.stringify(configToSave),

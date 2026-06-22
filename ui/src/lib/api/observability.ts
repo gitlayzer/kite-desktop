@@ -4,10 +4,15 @@ import { useQuery } from '@tanstack/react-query'
 import { OverviewData, PodMetrics, ResourceUsageHistory } from '@/types/api'
 
 import { API_BASE_URL } from '../api-client'
-import { appendCurrentClusterParam } from '../current-cluster'
+import {
+  appendCurrentClusterParam,
+  getCurrentCluster,
+} from '../current-cluster'
 import { getWebSocketUrl } from '../subpath'
 import useWebSocket, { WebSocketMessage } from '../useWebSocket'
 import { fetchAPI } from './shared'
+
+const getClusterQueryKey = () => getCurrentCluster() || '_no_cluster'
 
 // Overview API
 const fetchOverview = (): Promise<OverviewData> => {
@@ -15,8 +20,9 @@ const fetchOverview = (): Promise<OverviewData> => {
 }
 
 export const useOverview = (options?: { staleTime?: number }) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: ['overview'],
+    queryKey: ['overview', clusterQueryKey],
     queryFn: fetchOverview,
     staleTime: options?.staleTime || 30000, // 30 seconds cache
     refetchInterval: 30000, // Auto refresh every 30 seconds
@@ -41,8 +47,14 @@ export const useResourceUsageHistory = (
   duration: string,
   options?: { staleTime?: number; instance?: string; enabled?: boolean }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
-    queryKey: ['resource-usage-history', duration, options?.instance],
+    queryKey: [
+      'resource-usage-history',
+      clusterQueryKey,
+      duration,
+      options?.instance,
+    ],
     queryFn: () => fetchResourceUsageHistory(duration, options?.instance),
     enabled: options?.enabled,
     staleTime: options?.staleTime || 10000, // 10 seconds cache
@@ -81,9 +93,11 @@ export const usePodMetrics = (
     labelSelector?: string
   }
 ) => {
+  const clusterQueryKey = getClusterQueryKey()
   return useQuery({
     queryKey: [
       'pod-metrics',
+      clusterQueryKey,
       namespace,
       podName,
       duration,

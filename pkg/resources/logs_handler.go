@@ -22,6 +22,8 @@ import (
 type LogsHandler struct {
 }
 
+const batchLogPodLimit int64 = 100
+
 func NewLogsHandler() *LogsHandler {
 	return &LogsHandler{}
 }
@@ -99,17 +101,23 @@ func (h *LogsHandler) HandleLogsWebSocket(c *gin.Context) {
 			var listOpts []client.ListOption
 			listOpts = append(listOpts, client.InNamespace(namespace))
 			listOpts = append(listOpts, client.MatchingLabelsSelector{Selector: labelSelectorOption})
+			listOpts = append(listOpts, client.Limit(batchLogPodLimit))
 			if err := cs.K8sClient.List(ctx, podList, listOpts...); err != nil {
 				ws.SendErrorMessage("failed to list pods: " + err.Error())
 				return
 			}
+			if podList.GetContinue() != "" || podList.GetRemainingItemCount() != nil {
+				ws.SendMessage("warning", "匹配的 Pod 太多，本次只连接前 100 个。请缩小 namespace 或 labelSelector。")
+			}
+			activePods := make(map[string]struct{}, len(podList.Items))
 			for _, pod := range podList.Items {
 				if pod.Status.Phase == corev1.PodRunning {
 					bl.AddPod(pod)
+					activePods[pod.Namespace+"/"+pod.Name] = struct{}{}
 				}
 			}
 
-			go h.watchPods(ctx, cs, namespace, labelSelectorOption, bl)
+			go h.watchPods(ctx, cs, namespace, labelSelectorOption, bl, ws, activePods)
 		} else {
 			bl.AddPod(corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -123,7 +131,7 @@ func (h *LogsHandler) HandleLogsWebSocket(c *gin.Context) {
 	})
 }
 
-func (h *LogsHandler) watchPods(ctx context.Context, cs *cluster.ClientSet, namespace string, labelSelector labels.Selector, bl *kube.BatchLogHandler) {
+func (h *LogsHandler) watchPods(ctx context.Context, cs *cluster.ClientSet, namespace string, labelSelector labels.Selector, bl *kube.BatchLogHandler, ws *wsutil.Session, activePods map[string]struct{}) {
 	listOptions := metav1.ListOptions{
 		LabelSelector: labelSelector.String(),
 	}
@@ -133,6 +141,7 @@ func (h *LogsHandler) watchPods(ctx context.Context, cs *cluster.ClientSet, name
 		return
 	}
 	defer watchInterface.Stop()
+	limitNoticeSent := false
 
 	for {
 		select {
@@ -153,12 +162,25 @@ func (h *LogsHandler) watchPods(ctx context.Context, cs *cluster.ClientSet, name
 			switch event.Type {
 			case watch.Added, watch.Modified:
 				if pod.Status.Phase == corev1.PodRunning {
+					podKey := pod.Namespace + "/" + pod.Name
+					if _, ok := activePods[podKey]; !ok {
+						if len(activePods) >= int(batchLogPodLimit) {
+							if !limitNoticeSent {
+								_ = ws.SendMessage("warning", "匹配的 Pod 已达到 100 个上限，新的 Pod 不再自动接入日志流。请缩小 namespace 或 labelSelector。")
+								limitNoticeSent = true
+							}
+							continue
+						}
+						activePods[podKey] = struct{}{}
+					}
 					bl.AddPod(*pod)
 				} else {
 					bl.RemovePod(*pod)
+					delete(activePods, pod.Namespace+"/"+pod.Name)
 				}
 			case watch.Deleted:
 				bl.RemovePod(*pod)
+				delete(activePods, pod.Namespace+"/"+pod.Name)
 			}
 		}
 	}

@@ -25,7 +25,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Footer } from '@/components/footer'
-import { LanguageToggle } from '@/components/language-toggle'
 
 interface InitStepProps {
   step: number
@@ -221,10 +220,6 @@ export function InitializationPage() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <div className="absolute top-6 right-6 z-10">
-        <LanguageToggle />
-      </div>
-
       <div className="flex-1 flex items-center justify-center py-8 px-4">
         <div className="w-full max-w-2xl">
           <div className="text-center mb-8">

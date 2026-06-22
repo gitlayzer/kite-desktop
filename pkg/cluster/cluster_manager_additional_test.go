@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/zxh326/kite/pkg/kube"
@@ -330,6 +331,79 @@ func TestBuildClientSet(t *testing.T) {
 			t.Fatalf("buildClientSet() = %#v, want cluster name %q", got, "cluster-b")
 		}
 	})
+}
+
+func TestImportableKubeconfigContextNamesDedupesSameCluster(t *testing.T) {
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.CurrentContext = "alias-b"
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"cluster-a": {Server: "https://api.example.com"},
+		"cluster-b": {Server: "https://api.example.com"},
+		"cluster-c": {Server: "https://other.example.com"},
+	}
+	kubeconfig.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+		"user-a": {Token: "token-a"},
+		"user-b": {Token: "token-b"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"alias-a": {
+			Cluster:  "cluster-a",
+			AuthInfo: "user-a",
+		},
+		"alias-b": {
+			Cluster:  "cluster-b",
+			AuthInfo: "user-b",
+		},
+		"other": {
+			Cluster:  "cluster-c",
+			AuthInfo: "user-a",
+		},
+	}
+
+	got := importableKubeconfigContextNames(kubeconfig)
+	want := []string{"alias-b", "other"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestImportableKubeconfigContextNamesSkipsBrokenContexts(t *testing.T) {
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"cluster-a": {Server: "https://api.example.com"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"broken": {Cluster: "missing"},
+		"valid":  {Cluster: "cluster-a"},
+	}
+
+	got := importableKubeconfigContextNames(kubeconfig)
+	want := []string{"valid"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestImportableKubeconfigContextNamesSkipsExistingClusterIdentities(t *testing.T) {
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.CurrentContext = "existing-alias"
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"existing": {Server: "https://api.example.com"},
+		"new":      {Server: "https://new.example.com"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"existing-alias": {Cluster: "existing"},
+		"new-alias":      {Cluster: "new"},
+	}
+	seen := map[string]struct{}{
+		kubeconfigClusterIdentity("existing", kubeconfig.Clusters["existing"]): {},
+	}
+
+	got := importableKubeconfigContextNames(kubeconfig, seen)
+	want := []string{"new-alias"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
+	}
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

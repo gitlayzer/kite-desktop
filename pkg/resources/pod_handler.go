@@ -62,6 +62,8 @@ type PodListWithMetrics struct {
 	metav1.ListMeta `json:"metadata" protobuf:"bytes,1,opt,name=metadata"`
 }
 
+const podWatchEventLimit = 1000
+
 func GetPodMetrics(metricsMap map[string]metricsv1.PodMetrics, pod *corev1.Pod) *PodMetrics {
 	key := pod.Namespace + "/" + pod.Name
 	podMetrics, ok := metricsMap[key]
@@ -109,6 +111,11 @@ func (h *PodHandler) ListMetrics(c *gin.Context) (map[string]metricsv1.PodMetric
 	var listOpts []client.ListOption
 	if namespace := c.Param("namespace"); namespace != "" && namespace != common.AllNamespaces {
 		listOpts = append(listOpts, client.InNamespace(namespace))
+	}
+	if limit, enabled, err := normalizeListLimit(c.Query("limit")); err != nil {
+		return nil, err
+	} else if enabled {
+		listOpts = append(listOpts, client.Limit(limit))
 	}
 	if labelSelector := c.Query("labelSelector"); labelSelector != "" {
 		selector, err := metav1.ParseToLabelSelector(labelSelector)
@@ -529,6 +536,12 @@ func (h *PodHandler) Watch(c *gin.Context) {
 	reduce := c.DefaultQuery("reduce", "false") == "true"
 	labelSelector := c.Query("labelSelector")
 	fieldSelector := c.Query("fieldSelector")
+	if namespace == common.AllNamespaces && labelSelector == "" && fieldSelector == "" {
+		_ = writeSSE(c, "error", gin.H{
+			"error": "为了避免大集群卡死，不能直接监听全集群 Pods。请先选择一个命名空间，或者添加 label/field 过滤条件后再开启 Watch。",
+		})
+		return
+	}
 
 	listOpts := metav1.ListOptions{}
 	if labelSelector != "" {
@@ -559,6 +572,28 @@ func (h *PodHandler) Watch(c *gin.Context) {
 	defer ticker.Stop()
 
 	flusher, _ := c.Writer.(http.Flusher)
+	seenPods := make(map[string]struct{})
+	truncatedNoticeSent := false
+	allowEvent := func(pod *corev1.Pod, eventType watch.EventType) bool {
+		key := pod.Namespace + "/" + pod.Name
+		if eventType == watch.Deleted {
+			return true
+		}
+		if _, ok := seenPods[key]; ok {
+			return true
+		}
+		if len(seenPods) >= podWatchEventLimit {
+			if !truncatedNoticeSent {
+				_ = writeSSE(c, "warning", gin.H{
+					"warning": fmt.Sprintf("当前 Watch 已达到 %d 个 Pod 的显示上限。为了避免大集群卡顿，请缩小 namespace、label 或 field 条件。", podWatchEventLimit),
+				})
+				truncatedNoticeSent = true
+			}
+			return false
+		}
+		seenPods[key] = struct{}{}
+		return true
+	}
 
 	for {
 		select {
@@ -567,15 +602,23 @@ func (h *PodHandler) Watch(c *gin.Context) {
 			return
 		case <-ticker.C:
 			metricsMap, _ = h.ListMetrics(c)
+			metricEvents := 0
 			for _, metrics := range metricsMap {
+				if metricEvents >= int(maxListLimit) {
+					break
+				}
 				pod, err := h.GetResource(c, metrics.Namespace, metrics.Name)
 				if err != nil {
 					klog.Warningf("Failed to get pod: %v", err)
 					continue
 				}
 				p := pod.(*corev1.Pod)
+				if !allowEvent(p, watch.Modified) {
+					continue
+				}
 				obj := &PodWithMetrics{Pod: p, Metrics: GetPodMetrics(metricsMap, p)}
 				_ = writeSSE(c, "modified", obj)
+				metricEvents++
 			}
 			_, _ = fmt.Fprintf(c.Writer, ": ping\n\n") // comment line per SSE
 			flusher.Flush()
@@ -587,6 +630,9 @@ func (h *PodHandler) Watch(c *gin.Context) {
 
 			pod, ok := event.Object.(*corev1.Pod)
 			if !ok || pod == nil {
+				continue
+			}
+			if !allowEvent(pod, event.Type) {
 				continue
 			}
 
@@ -617,6 +663,7 @@ func (h *PodHandler) Watch(c *gin.Context) {
 			case watch.Modified:
 				_ = writeSSE(c, "modified", obj)
 			case watch.Deleted:
+				delete(seenPods, pod.Namespace+"/"+pod.Name)
 				_ = writeSSE(c, "deleted", obj)
 			case watch.Error:
 				_ = writeSSE(c, "error", gin.H{"error": "watch error"})

@@ -70,7 +70,8 @@ func newFakeClientSetUncached(t *testing.T, objs ...client.Object) *cluster.Clie
 	t.Helper()
 	scheme := buildTestScheme(t)
 	cb := fake.NewClientBuilder().
-		WithScheme(scheme)
+		WithScheme(scheme).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", podNodeIndexer)
 
 	for _, o := range objs {
 		cb = cb.WithObjects(o)
@@ -249,6 +250,58 @@ func TestNodeHandlerList_EmptyCluster(t *testing.T) {
 
 	result := decodeNodeListResponse(t, rec)
 	assert.Empty(t, result.Items, "empty cluster should return no nodes")
+}
+
+func TestBuildNodeListOptionsUsesCursorPagination(t *testing.T) {
+	ctx, _ := newTestGinContext(t, newFakeClientSet(t))
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/nodes?limit=9999&continue=next-token", nil)
+
+	opts, err := buildNodeListOptions(ctx)
+	require.NoError(t, err)
+	require.Len(t, opts, 2)
+
+	listOptions := &client.ListOptions{}
+	for _, opt := range opts {
+		opt.ApplyToList(listOptions)
+	}
+
+	assert.Equal(t, maxListLimit, listOptions.Limit)
+	assert.Equal(t, "next-token", listOptions.Continue)
+}
+
+func TestNodeHandlerList_DesktopModeSkipsPodRequestsByDefault(t *testing.T) {
+	t.Setenv("KITE_DESKTOP_MODE", "1")
+
+	node := makeNode("node-a", 4000, 8*1024*1024*1024, 110)
+	pod := makePod("pod-a", "default", "node-a", 500, 128*1024*1024)
+	cs := newFakeClientSet(t, node, pod)
+	ctx, rec := newTestGinContext(t, cs)
+
+	handler := NewNodeHandler()
+	handler.List(ctx)
+
+	result := decodeNodeListResponse(t, rec)
+	require.Len(t, result.Items, 1)
+	assert.Equal(t, int64(0), result.Items[0].Metrics.Pods)
+}
+
+func TestNodeHandlerList_DesktopModeExplicitIncludePodRequests(t *testing.T) {
+	t.Setenv("KITE_DESKTOP_MODE", "1")
+
+	node := makeNode("node-a", 4000, 8*1024*1024*1024, 110)
+	pod := makePod("pod-a", "default", "node-a", 500, 128*1024*1024)
+	cs := newFakeClientSet(t, node, pod)
+	ctx, rec := newTestGinContext(t, cs)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/nodes?includePodRequests=true", nil)
+
+	handler := NewNodeHandler()
+	handler.List(ctx)
+
+	result := decodeNodeListResponse(t, rec)
+	require.Len(t, result.Items, 1)
+	assert.Equal(t, int64(1), result.Items[0].Metrics.Pods)
+	assert.Equal(t, int64(500), result.Items[0].Metrics.CPURequest)
+	assert.Equal(t, int64(128*1024*1024), result.Items[0].Metrics.MemoryRequest)
 }
 
 // TestNodeHandlerList_NodesWithoutPods verifies that nodes with no scheduled

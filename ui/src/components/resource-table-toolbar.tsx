@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/select'
 import { Toggle } from '@/components/ui/toggle'
 
+import { InlineClusterSelector } from './selector/cluster-selector'
 import { NamespaceSelector } from './selector/namespace-selector'
 
 interface ResourceTableToolbarProps<T> {
@@ -43,8 +44,12 @@ interface ResourceTableToolbarProps<T> {
   onCreateClick?: () => void
   searchQuery: string
   setSearchQuery: (value: string) => void
+  serverNameFilter?: string
+  onApplyExactNameFilter?: () => void
+  onClearExactNameFilter?: () => void
   selectedNamespace?: string
   handleNamespaceChange: (value: string) => void
+  requiresNamespace?: boolean
   useSSE: boolean
   isConnected: boolean
   refreshInterval: number
@@ -64,8 +69,12 @@ export function ResourceTableToolbar<T>({
   onCreateClick,
   searchQuery,
   setSearchQuery,
+  serverNameFilter,
+  onApplyExactNameFilter,
+  onClearExactNameFilter,
   selectedNamespace,
   handleNamespaceChange,
+  requiresNamespace = false,
   useSSE,
   isConnected,
   refreshInterval,
@@ -127,12 +136,13 @@ export function ResourceTableToolbar<T>({
               <SelectItem value="30000">30s</SelectItem>
             </SelectContent>
           </Select>
+          <InlineClusterSelector />
           {!clusterScope && (
             <NamespaceSelector
               selectedNamespace={selectedNamespace}
               handleNamespaceChange={handleNamespaceChange}
-              showAll={true}
-              multiple={true}
+              showAll={!requiresNamespace}
+              multiple={!requiresNamespace}
             />
           )}
           {filterableColumns.map((column) => {
@@ -187,17 +197,25 @@ export function ResourceTableToolbar<T>({
             <div className="relative min-w-0 flex-1 sm:w-[280px]">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder={`Search ${resourceName}...`}
+                placeholder={`Search current ${resourceName} page, Enter exact name...`}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    onApplyExactNameFilter?.()
+                  }
+                }}
                 className="w-full pl-9 pr-4"
               />
             </div>
-            {searchQuery && (
+            {(searchQuery || serverNameFilter) && (
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setSearchQuery('')}
+                onClick={() => {
+                  setSearchQuery('')
+                  onClearExactNameFilter?.()
+                }}
                 className="h-9 w-9"
                 aria-label="Clear search"
               >
@@ -205,6 +223,11 @@ export function ResourceTableToolbar<T>({
               </Button>
             )}
           </div>
+          {serverNameFilter ? (
+            <div className="text-xs text-muted-foreground sm:max-w-[280px]">
+              精确名称过滤：{serverNameFilter}
+            </div>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             {selectedRowCount > 0 && (

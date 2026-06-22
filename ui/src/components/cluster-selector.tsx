@@ -47,8 +47,8 @@ export function ClusterSelector() {
           <IconServer className="h-4 w-4" />
           <span className="text-sm font-medium truncate">
             {isSwitching
-              ? 'Switching...'
-              : currentClusterData?.name || 'Select Cluster'}
+              ? '切换中...'
+              : currentClusterData?.name || '选择集群'}
           </span>
           <IconChevronDown className="h-3 w-3 opacity-50" />
         </Button>
@@ -58,18 +58,17 @@ export function ClusterSelector() {
           <DropdownMenuItem
             key={cluster.name}
             onClick={() => setCurrentCluster(cluster.name)}
-            disabled={!!cluster.error}
             className="flex items-center justify-between"
           >
             <div className="flex flex-col overflow-hidden">
               <div className="flex items-center gap-2">
                 <span className="font-medium">{cluster.name}</span>
                 {cluster.isDefault && (
-                  <Badge className="text-xs">Default</Badge>
+                  <Badge className="text-xs">默认</Badge>
                 )}
                 {cluster.error && (
                   <Badge variant="destructive" className="text-xs">
-                    Sync Error
+                    同步错误
                   </Badge>
                 )}
               </div>

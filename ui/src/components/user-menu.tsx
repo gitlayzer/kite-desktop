@@ -35,7 +35,7 @@ const DISPLAY_SCALE_MAX = 120
 const DISPLAY_SCALE_STEP = 5
 
 export function UserMenu() {
-  const { user, logout, hasGlobalSidebarPreference } = useAuth()
+  const { user, logout, hasGlobalSidebarPreference, capabilities } = useAuth()
   const {
     colorTheme,
     setColorTheme,
@@ -47,9 +47,12 @@ export function UserMenu() {
   const [open, setOpen] = useState(false)
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false)
   const [scaleInput, setScaleInput] = useState(String(displayScale))
-  const isPasswordUser = !user?.provider || user.provider === 'password'
+  const desktopMode = capabilities.desktopMode
+  const isPasswordUser =
+    !desktopMode && (!user?.provider || user.provider === 'password')
 
   if (!user) return null
+  if (desktopMode) return null
 
   const getInitials = (name: string) => {
     return name
@@ -287,7 +290,7 @@ export function UserMenu() {
             <SidebarCustomizer onOpenChange={(d) => setOpen(d)} />
           )}
 
-          {user.provider !== 'Anonymous' && (
+          {user.provider !== 'Anonymous' && !desktopMode && (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuItem

@@ -1,8 +1,13 @@
 package resources
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -110,6 +115,51 @@ func TestGetPodMetricsMissingMetrics(t *testing.T) {
 	}
 }
 
+func TestPodWatchRejectsUnfilteredAllNamespaces(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/pods/_all/watch", nil)
+	ctx.Params = gin.Params{{Key: "namespace", Value: "_all"}}
+	ctx.Set("cluster", newFakeClientSet(t))
+
+	NewPodHandler().Watch(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("expected SSE error event, body=%q", body)
+	}
+	if !strings.Contains(body, "不能直接监听全集群 Pods") {
+		t.Fatalf("expected plain Chinese large-cluster warning, body=%q", body)
+	}
+}
+
+func TestWriteSSEWarningEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+
+	requireNoError(t, writeSSE(ctx, "warning", gin.H{"warning": "达到显示上限"}))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: warning") {
+		t.Fatalf("expected warning event, body=%q", body)
+	}
+	if strings.Contains(body, "event: error") {
+		t.Fatalf("warning must not be emitted as error, body=%q", body)
+	}
+
+	var payload map[string]string
+	data := strings.TrimSpace(strings.TrimPrefix(strings.Split(body, "data: ")[1], ""))
+	requireNoError(t, json.Unmarshal([]byte(data), &payload))
+	if payload["warning"] != "达到显示上限" {
+		t.Fatalf("payload warning = %q", payload["warning"])
+	}
+}
+
 func TestParseKubeSemverAndResizeSupport(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -137,5 +187,12 @@ func TestParseKubeSemverAndResizeSupport(t *testing.T) {
 				t.Fatalf("expected parsed version for %q", tt.version)
 			}
 		})
+	}
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

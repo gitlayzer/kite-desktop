@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zxh326/kite/pkg/common"
@@ -17,29 +16,40 @@ import (
 )
 
 func (cm *ClusterManager) GetClusters(c *gin.Context) {
-	clusters, errors, defaultContext := cm.snapshotState()
-	result := make([]common.ClusterInfo, 0, len(clusters))
-	user := c.MustGet("user").(model.User)
-	for name, cluster := range clusters {
-		if !rbac.CanAccessCluster(user, name) {
-			continue
-		}
-		result = append(result, common.ClusterInfo{
-			Name:      name,
-			Version:   cluster.Version,
-			IsDefault: name == defaultContext,
-		})
+	clusterState, errorState, _ := cm.snapshotState()
+	dbClusters, err := model.ListClusters()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	for name, errMsg := range errors {
-		if !rbac.CanAccessCluster(user, name) {
+
+	result := make([]common.ClusterInfo, 0, len(dbClusters))
+	user := c.MustGet("user").(model.User)
+	for _, cluster := range dbClusters {
+		if !cluster.Enable || !rbac.CanAccessCluster(user, cluster.Name) {
 			continue
 		}
-		result = append(result, common.ClusterInfo{
-			Name:      name,
-			Version:   "",
-			IsDefault: false,
-			Error:     errMsg,
-		})
+
+		clusterInfo := common.ClusterInfo{
+			ID:               cluster.ID,
+			Name:             cluster.Name,
+			Description:      cluster.Description,
+			Enabled:          cluster.Enable,
+			InCluster:        cluster.InCluster,
+			IsDefault:        cluster.IsDefault,
+			DefaultNamespace: defaultNamespaceFromKubeconfig(string(cluster.Config)),
+			PrometheusURL:    cluster.PrometheusURL,
+		}
+
+		if clientSet, exists := clusterState[cluster.Name]; exists {
+			clusterInfo.Version = clientSet.Version
+			clusterInfo.DefaultNamespace = clientSet.DefaultNamespace
+		}
+		if errMsg, exists := errorState[cluster.Name]; exists {
+			clusterInfo.Error = errMsg
+		}
+
+		result = append(result, clusterInfo)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name
@@ -58,18 +68,20 @@ func (cm *ClusterManager) GetClusterList(c *gin.Context) {
 	result := make([]gin.H, 0, len(clusters))
 	for _, cluster := range clusters {
 		clusterInfo := gin.H{
-			"id":            cluster.ID,
-			"name":          cluster.Name,
-			"description":   cluster.Description,
-			"enabled":       cluster.Enable,
-			"inCluster":     cluster.InCluster,
-			"isDefault":     cluster.IsDefault,
-			"prometheusURL": cluster.PrometheusURL,
-			"config":        "",
+			"id":               cluster.ID,
+			"name":             cluster.Name,
+			"description":      cluster.Description,
+			"enabled":          cluster.Enable,
+			"inCluster":        cluster.InCluster,
+			"isDefault":        cluster.IsDefault,
+			"defaultNamespace": defaultNamespaceFromKubeconfig(string(cluster.Config)),
+			"prometheusURL":    cluster.PrometheusURL,
+			"config":           "",
 		}
 
 		if clientSet, exists := clusterState[cluster.Name]; exists {
 			clusterInfo["version"] = clientSet.Version
+			clusterInfo["defaultNamespace"] = clientSet.DefaultNamespace
 		}
 		if errMsg, exists := errorState[cluster.Name]; exists {
 			clusterInfo["error"] = errMsg
@@ -131,7 +143,10 @@ func (cm *ClusterManager) CreateCluster(c *gin.Context) {
 		return
 	}
 
-	TriggerClusterSync()
+	if err := cm.syncClusters(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusCreated, gin.H{
 		"id":      cluster.ID,
@@ -205,7 +220,10 @@ func (cm *ClusterManager) UpdateCluster(c *gin.Context) {
 		return
 	}
 
-	TriggerClusterSync()
+	if err := cm.syncClusters(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "cluster updated successfully"})
 }
@@ -233,17 +251,15 @@ func (cm *ClusterManager) DeleteCluster(c *gin.Context) {
 		return
 	}
 
-	if cluster.IsDefault {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot delete default cluster"})
-		return
-	}
-
 	if err := model.DeleteCluster(cluster); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	TriggerClusterSync()
+	if err := cm.syncClusters(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "cluster deleted successfully"})
 }
@@ -288,9 +304,10 @@ func (cm *ClusterManager) ImportClustersFromKubeconfig(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		TriggerClusterSync()
-		// wait for sync to complete
-		time.Sleep(1 * time.Second)
+		if err := cm.syncClusters(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusCreated, gin.H{"message": fmt.Sprintf("imported %d clusters successfully", 1)})
 		return
 	}
@@ -302,8 +319,9 @@ func (cm *ClusterManager) ImportClustersFromKubeconfig(c *gin.Context) {
 	}
 
 	importedCount := ImportClustersFromKubeconfig(kubeconfig)
-	TriggerClusterSync()
-	// wait for sync to complete
-	time.Sleep(1 * time.Second)
+	if err := cm.syncClusters(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusCreated, gin.H{"message": fmt.Sprintf("imported %d clusters successfully", importedCount)})
 }

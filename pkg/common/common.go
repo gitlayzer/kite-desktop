@@ -41,6 +41,8 @@ var (
 	AllNamespaces = "_all"
 
 	AnonymousUserEnabled = false
+	DesktopMode          = false
+	DesktopAccessToken   = ""
 
 	CookieExpirationSeconds = 2 * JWTExpirationSeconds // double jwt
 
@@ -129,6 +131,13 @@ func LoadEnvs() {
 	if v := os.Getenv("ANONYMOUS_USER_ENABLED"); v == "true" {
 		AnonymousUserEnabled = true
 		klog.Warningf("Anonymous user is enabled, this is not secure for production!")
+	}
+	if v := os.Getenv("KITE_DESKTOP_MODE"); v == "true" || v == "1" {
+		DesktopMode = true
+		klog.Infof("Kite desktop mode is enabled")
+	}
+	if token := strings.TrimSpace(os.Getenv("KITE_DESKTOP_ACCESS_TOKEN")); token != "" {
+		DesktopAccessToken = token
 	}
 	if v := os.Getenv("HOST"); v != "" {
 		Host = v
