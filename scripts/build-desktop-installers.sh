@@ -67,13 +67,34 @@ copy_dist_artifact() {
   cp "$artifact" "$INSTALLER_DIR/"
 }
 
+run_electron_builder() {
+  local label="$1"
+  shift
+  local attempt=1
+  local max_attempts=3
+
+  while true; do
+    if (cd "$DESKTOP_DIR" && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder "$@"); then
+      return 0
+    fi
+
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      return 1
+    fi
+
+    echo "electron-builder failed for $label, retrying ($attempt/$max_attempts)..." >&2
+    attempt=$((attempt + 1))
+    sleep 5
+  done
+}
+
 package_macos() {
   local electron_arch="$1"
   local goarch="$2"
 
   build_backend darwin "$goarch" "$RESOURCE_DIR/kite"
   echo "==> Packaging macOS $electron_arch DMG"
-  (cd "$DESKTOP_DIR" && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --mac dmg "--$electron_arch")
+  run_electron_builder "macOS $electron_arch" --mac dmg "--$electron_arch"
   copy_dist_artifact "Kite-$DESKTOP_VERSION-*-$electron_arch.dmg"
 }
 
@@ -81,7 +102,7 @@ package_windows() {
   ensure_windows_icon
   build_backend windows amd64 "$RESOURCE_DIR/kite.exe"
   echo "==> Packaging Windows x64 installer"
-  (cd "$DESKTOP_DIR" && CSC_IDENTITY_AUTO_DISCOVERY=false pnpm exec electron-builder --win nsis --x64)
+  run_electron_builder "Windows x64" --win nsis --x64
   copy_dist_artifact "Kite-$DESKTOP_VERSION-*-x64.exe"
 }
 
