@@ -1,4 +1,11 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  nativeImage,
+  shell,
+} = require('electron')
 const { spawn } = require('child_process')
 const crypto = require('crypto')
 const fs = require('fs')
@@ -73,6 +80,31 @@ function appIconPath() {
     : path.join(__dirname, 'build', 'icon.icns')
 
   return fs.existsSync(iconPath) ? iconPath : undefined
+}
+
+function appDockIconPath() {
+  const candidates = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, 'icon.png'),
+        path.join(process.resourcesPath, 'icon.icns'),
+      ]
+    : [
+        path.join(__dirname, 'build', 'Kite.iconset', 'icon_512x512.png'),
+        path.join(__dirname, 'build', 'icon.icns'),
+      ]
+
+  return candidates.find((candidate) => fs.existsSync(candidate))
+}
+
+function setDockIcon(iconPath) {
+  if (process.platform !== 'darwin' || !iconPath || !app.dock) {
+    return
+  }
+
+  const image = nativeImage.createFromPath(iconPath)
+  if (!image.isEmpty()) {
+    app.dock.setIcon(image)
+  }
 }
 
 function ensureEncryptionKey(userDataPath) {
@@ -173,12 +205,13 @@ async function startBackend() {
 
 function createWindow(port) {
   const icon = appIconPath()
+  setDockIcon(appDockIconPath() || icon)
 
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 1024,
-    minHeight: 700,
+    width: 1600,
+    height: 960,
+    minWidth: 1200,
+    minHeight: 760,
     title: '',
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 14, y: 14 },

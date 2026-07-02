@@ -14,6 +14,45 @@ LDFLAGS="-s -w -X github.com/zxh326/kite/pkg/version.Version=$VERSION -X github.
 
 mkdir -p "$RESOURCE_DIR" "$INSTALLER_DIR"
 
+allow_unsigned_dmg() {
+  [ "${KITE_ALLOW_UNSIGNED_DMG:-}" = "1" ] || [ "${KITE_ALLOW_UNSIGNED_DMG:-}" = "true" ]
+}
+
+has_codesigning_identity() {
+  if [ -n "${MAC_CODE_SIGN_IDENTITY:-}" ] || [ -n "${CSC_NAME:-}" ]; then
+    return 0
+  fi
+
+  security find-identity -v -p codesigning 2>/dev/null | grep -q 'Developer ID Application'
+}
+
+require_macos_distribution_signing() {
+  if allow_unsigned_dmg; then
+    cat >&2 <<'EOF'
+==> WARNING: building unsigned macOS DMGs for local development only.
+    These DMGs are not suitable for sending to other Macs. Gatekeeper may show
+    "Kite.app is damaged" or refuse to open the app after download.
+EOF
+    return
+  fi
+
+  if has_codesigning_identity; then
+    return
+  fi
+
+  cat >&2 <<'EOF'
+ERROR: No Developer ID Application signing identity was found.
+
+macOS DMGs sent to other machines must be signed and notarized, otherwise
+Gatekeeper can reject the app as damaged or unidentified.
+
+Provide a Developer ID certificate via MAC_CODE_SIGN_IDENTITY/CSC_NAME and
+notarization credentials, or set KITE_ALLOW_UNSIGNED_DMG=1 only for local
+development builds that will not be distributed.
+EOF
+  exit 1
+}
+
 ensure_windows_icon() {
   if [ -f "$DESKTOP_DIR/build/icon.ico" ]; then
     return
@@ -88,6 +127,24 @@ clean_windows_output() {
   rm -f "$INSTALLER_DIR/Kite-$DESKTOP_VERSION-win-x64.exe"
 }
 
+verify_macos_signature() {
+  local electron_arch="$1"
+  local app_dir="mac"
+
+  if [ "$electron_arch" = "arm64" ]; then
+    app_dir="mac-arm64"
+  fi
+
+  local app_path="$DESKTOP_DIR/dist/$app_dir/Kite.app"
+  if [ ! -d "$app_path" ]; then
+    echo "Unable to find packaged app for signature verification: $app_path" >&2
+    exit 1
+  fi
+
+  echo "==> Verifying macOS $electron_arch app signature"
+  codesign --verify --deep --strict --verbose=2 "$app_path"
+}
+
 run_electron_builder() {
   local label="$1"
   shift
@@ -112,11 +169,23 @@ run_electron_builder() {
 package_macos() {
   local electron_arch="$1"
   local goarch="$2"
+  local mac_sign_args=()
 
+  require_macos_distribution_signing
   clean_macos_output "$electron_arch"
   build_backend darwin "$goarch" "$RESOURCE_DIR/kite"
+  if [ -n "${MAC_CODE_SIGN_IDENTITY:-}" ]; then
+    echo "==> Using macOS signing identity: $MAC_CODE_SIGN_IDENTITY"
+    mac_sign_args+=(--config.mac.identity="$MAC_CODE_SIGN_IDENTITY" --config.mac.hardenedRuntime=true)
+  elif [ -n "${CSC_NAME:-}" ]; then
+    echo "==> Using macOS signing identity from CSC_NAME"
+    mac_sign_args+=(--config.mac.identity="$CSC_NAME" --config.mac.hardenedRuntime=true)
+  else
+    mac_sign_args+=(--config.mac.identity=- --config.mac.hardenedRuntime=false)
+  fi
   echo "==> Packaging macOS $electron_arch DMG"
-  run_electron_builder "macOS $electron_arch" --mac dmg "--$electron_arch"
+  run_electron_builder "macOS $electron_arch" --mac dmg "--$electron_arch" "${mac_sign_args[@]}"
+  verify_macos_signature "$electron_arch"
   copy_dist_artifact "Kite-$DESKTOP_VERSION-*-$electron_arch.dmg"
 }
 

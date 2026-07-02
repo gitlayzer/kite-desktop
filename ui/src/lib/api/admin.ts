@@ -12,6 +12,7 @@ import {
 
 import { apiClient } from '../api-client'
 import { fetchAPI } from './shared'
+import { importClusters } from './system'
 
 export interface ClusterCreateRequest {
   name: string
@@ -42,7 +43,32 @@ export const useClusterList = (options?: { staleTime?: number }) => {
 // Create cluster
 export const createCluster = async (
   clusterData: ClusterCreateRequest
-): Promise<{ id: number; message: string }> => {
+): Promise<{
+  id: number
+  message: string
+  warnings?: string[]
+  connectionErrors?: Record<string, string>
+}> => {
+  if (!clusterData.inCluster && clusterData.config?.trim()) {
+    const result = await importClusters({ config: clusterData.config })
+    return {
+      id: 0,
+      message: result.message,
+      warnings: result.warnings,
+      connectionErrors: result.connectionErrors,
+    }
+  }
+
+  if (clusterData.inCluster) {
+    const result = await importClusters({ config: '', inCluster: true })
+    return {
+      id: 0,
+      message: result.message,
+      warnings: result.warnings,
+      connectionErrors: result.connectionErrors,
+    }
+  }
+
   return await apiClient.post<{ id: number; message: string }>(
     '/admin/clusters/',
     clusterData

@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,10 +10,15 @@ import (
 	"testing"
 
 	"github.com/bytedance/mockey"
+	"github.com/glebarez/sqlite"
+	"github.com/zxh326/kite/pkg/common"
 	"github.com/zxh326/kite/pkg/model"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -23,6 +29,28 @@ func init() {
 	if err := os.Setenv("MOCKEY_CHECK_GCFLAGS", "false"); err != nil {
 		panic(err)
 	}
+}
+
+func setupClusterTestDB(t *testing.T) {
+	t.Helper()
+
+	oldDB := model.DB
+	oldKey := common.KiteEncryptKey
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Cluster{}); err != nil {
+		t.Fatalf("automigrate cluster: %v", err)
+	}
+
+	model.DB = db
+	common.KiteEncryptKey = "cluster-test-key"
+	t.Cleanup(func() {
+		model.DB = oldDB
+		common.KiteEncryptKey = oldKey
+	})
 }
 
 func TestIsClusterLocalURL(t *testing.T) {
@@ -185,6 +213,35 @@ func TestGetClientSet(t *testing.T) {
 		}
 	})
 
+	t.Run("returns cluster error when named cluster failed to load", func(t *testing.T) {
+		cm := &ClusterManager{
+			clusters: map[string]*ClientSet{},
+			errors: map[string]string{
+				"broken": "集群认证失败：请重新导入 kubeconfig。",
+			},
+		}
+
+		_, err := cm.GetClientSet("broken")
+		if err == nil || err.Error() != "集群认证失败：请重新导入 kubeconfig。" {
+			t.Fatalf("GetClientSet() error = %v, want stored cluster error", err)
+		}
+	})
+
+	t.Run("returns first stored error when all clusters failed to load", func(t *testing.T) {
+		cm := &ClusterManager{
+			clusters: map[string]*ClientSet{},
+			errors: map[string]string{
+				"z-broken": "无法连接集群：z",
+				"a-broken": "无法连接集群：a",
+			},
+		}
+
+		_, err := cm.GetClientSet("")
+		if err == nil || err.Error() != "无法连接集群：a" {
+			t.Fatalf("GetClientSet() error = %v, want first stored cluster error", err)
+		}
+	})
+
 	t.Run("returns default cluster when set", func(t *testing.T) {
 		expected := &ClientSet{Name: "default"}
 		cm := &ClusterManager{
@@ -254,6 +311,49 @@ func TestGetClientSet(t *testing.T) {
 			t.Fatalf("GetClientSet() error = %v, want %q", err, "cluster not found: missing")
 		}
 	})
+}
+
+func TestClusterConnectionErrorMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "expired credentials",
+			err:  fmt.Errorf("the server has asked for the client to provide credentials"),
+			want: "集群认证失败",
+		},
+		{
+			name: "certificate mismatch",
+			err:  fmt.Errorf("x509: certificate signed by unknown authority"),
+			want: "集群证书校验失败",
+		},
+		{
+			name: "timeout",
+			err:  fmt.Errorf("context deadline exceeded"),
+			want: "连接集群超时",
+		},
+		{
+			name: "dns failure",
+			err:  fmt.Errorf("dial tcp: lookup api.example.invalid: no such host"),
+			want: "无法解析集群地址",
+		},
+		{
+			name: "generic",
+			err:  fmt.Errorf("something else"),
+			want: "无法连接集群",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clusterConnectionErrorMessage(tt.err)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("clusterConnectionErrorMessage() = %q, want to contain %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestBuildClientSet(t *testing.T) {
@@ -361,7 +461,30 @@ func TestImportableKubeconfigContextNamesDedupesSameCluster(t *testing.T) {
 	}
 
 	got := importableKubeconfigContextNames(kubeconfig)
-	want := []string{"alias-b", "other"}
+	want := []string{"alias-b", "alias-a", "other"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestImportableKubeconfigContextNamesDedupesSameClusterAndAuth(t *testing.T) {
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.CurrentContext = "alias-b"
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"cluster-a": {Server: "https://api.example.com"},
+		"cluster-b": {Server: "https://api.example.com"},
+	}
+	kubeconfig.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+		"user-a": {Token: "same-token"},
+		"user-b": {Token: "same-token"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"alias-a": {Cluster: "cluster-a", AuthInfo: "user-a"},
+		"alias-b": {Cluster: "cluster-b", AuthInfo: "user-b"},
+	}
+
+	got := importableKubeconfigContextNames(kubeconfig)
+	want := []string{"alias-b"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
 	}
@@ -371,6 +494,7 @@ func TestImportableKubeconfigContextNamesSkipsBrokenContexts(t *testing.T) {
 	kubeconfig := clientcmdapi.NewConfig()
 	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
 		"cluster-a": {Server: "https://api.example.com"},
+		"cluster-b": {Server: "https://api-b.example.com"},
 	}
 	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
 		"broken": {Cluster: "missing"},
@@ -379,6 +503,22 @@ func TestImportableKubeconfigContextNamesSkipsBrokenContexts(t *testing.T) {
 
 	got := importableKubeconfigContextNames(kubeconfig)
 	want := []string{"valid"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
+	}
+}
+
+func TestImportableKubeconfigContextNamesFallsBackToOnlyCluster(t *testing.T) {
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"cluster-a": {Server: "https://api.example.com"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"fallback": {Cluster: "missing"},
+	}
+
+	got := importableKubeconfigContextNames(kubeconfig)
+	want := []string{"fallback"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
 	}
@@ -395,8 +535,9 @@ func TestImportableKubeconfigContextNamesSkipsExistingClusterIdentities(t *testi
 		"existing-alias": {Cluster: "existing"},
 		"new-alias":      {Cluster: "new"},
 	}
+	existingContext := kubeconfig.Contexts["existing-alias"]
 	seen := map[string]struct{}{
-		kubeconfigClusterIdentity("existing", kubeconfig.Clusters["existing"]): {},
+		kubeconfigContextIdentity(kubeconfig, "existing-alias", existingContext, kubeconfig.Clusters["existing"]): {},
 	}
 
 	got := importableKubeconfigContextNames(kubeconfig, seen)
@@ -404,6 +545,311 @@ func TestImportableKubeconfigContextNamesSkipsExistingClusterIdentities(t *testi
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("importableKubeconfigContextNames() = %#v, want %#v", got, want)
 	}
+}
+
+func TestImportClustersFromKubeconfigWithResultImportsMultipleContexts(t *testing.T) {
+	setupClusterTestDB(t)
+
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.CurrentContext = "prod-admin"
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"prod": {Server: "https://prod.example.com"},
+		"dev":  {Server: "https://dev.example.com"},
+	}
+	kubeconfig.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+		"admin": {Token: "admin-token"},
+		"dev":   {Token: "dev-token"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"prod-admin": {Cluster: "prod", AuthInfo: "admin", Namespace: "default"},
+		"dev":        {Cluster: "dev", AuthInfo: "dev", Namespace: "dev"},
+	}
+
+	result := ImportClustersFromKubeconfigWithResult(kubeconfig)
+	if result.Imported != 2 {
+		t.Fatalf("imported = %d, want 2, errors=%v", result.Imported, result.Errors)
+	}
+
+	clusters, err := model.ListClusters()
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("len(clusters) = %d, want 2", len(clusters))
+	}
+
+	result = ImportClustersFromKubeconfigWithResult(kubeconfig)
+	if result.Imported != 0 || result.Skipped != 2 {
+		t.Fatalf("second import result = %#v, want imported=0 skipped=2", result)
+	}
+}
+
+func TestImportClustersFromKubeconfigWithResultStoresIndependentContextConfigs(t *testing.T) {
+	setupClusterTestDB(t)
+
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.CurrentContext = "prod-admin"
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"shared": {Server: "https://shared.example.com"},
+	}
+	kubeconfig.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+		"prod": {Token: "prod-token"},
+		"dev":  {Token: "dev-token"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"prod-admin": {Cluster: "shared", AuthInfo: "prod", Namespace: "prod"},
+		"dev-admin":  {Cluster: "shared", AuthInfo: "dev", Namespace: "dev"},
+	}
+
+	result := ImportClustersFromKubeconfigWithResult(kubeconfig)
+	if result.Imported != 2 {
+		t.Fatalf("imported = %d, want 2, errors=%v", result.Imported, result.Errors)
+	}
+
+	clusters, err := model.ListClustersWithConfigStatus()
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("len(clusters) = %d, want 2", len(clusters))
+	}
+
+	for _, item := range clusters {
+		if item.ConfigError != nil {
+			t.Fatalf("config decrypt error for %s: %v", item.Cluster.Name, item.ConfigError)
+		}
+		stored, err := clientcmd.Load([]byte(item.Cluster.Config))
+		if err != nil {
+			t.Fatalf("load stored kubeconfig for %s: %v", item.Cluster.Name, err)
+		}
+		if stored.CurrentContext != item.Cluster.Name {
+			t.Fatalf("stored current context for %s = %q, want cluster name", item.Cluster.Name, stored.CurrentContext)
+		}
+		if len(stored.Contexts) != 1 || len(stored.Clusters) != 1 || len(stored.AuthInfos) != 1 {
+			t.Fatalf("stored config for %s should be single-context, got contexts=%d clusters=%d authInfos=%d", item.Cluster.Name, len(stored.Contexts), len(stored.Clusters), len(stored.AuthInfos))
+		}
+		context := stored.Contexts[stored.CurrentContext]
+		if context == nil {
+			t.Fatalf("stored config for %s has no current context", item.Cluster.Name)
+		}
+		if context.Cluster != item.Cluster.Name {
+			t.Fatalf("stored context cluster for %s = %q, want %q", item.Cluster.Name, context.Cluster, item.Cluster.Name)
+		}
+		if stored.Clusters[item.Cluster.Name] == nil {
+			t.Fatalf("stored config for %s has no internal cluster key", item.Cluster.Name)
+		}
+	}
+}
+
+func TestImportClustersFromKubeconfigWithResultFallsBackToOnlyUser(t *testing.T) {
+	setupClusterTestDB(t)
+
+	kubeconfig := clientcmdapi.NewConfig()
+	kubeconfig.CurrentContext = "missing-user"
+	kubeconfig.Clusters = map[string]*clientcmdapi.Cluster{
+		"cluster-a": {Server: "https://api.example.com"},
+	}
+	kubeconfig.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+		"only-user": {Token: "token"},
+	}
+	kubeconfig.Contexts = map[string]*clientcmdapi.Context{
+		"missing-user": {Cluster: "cluster-a", AuthInfo: "not-found"},
+	}
+
+	result := ImportClustersFromKubeconfigWithResult(kubeconfig)
+	if result.Imported != 1 {
+		t.Fatalf("imported = %d, want 1, result=%#v", result.Imported, result)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "唯一的 user") {
+		t.Fatalf("warnings = %#v, want only-user fallback warning", result.Warnings)
+	}
+
+	clusters, err := model.ListClustersWithConfigStatus()
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	stored, err := clientcmd.Load([]byte(clusters[0].Cluster.Config))
+	if err != nil {
+		t.Fatalf("load stored kubeconfig: %v", err)
+	}
+	context := stored.Contexts[stored.CurrentContext]
+	if context.AuthInfo != "only-user" {
+		t.Fatalf("stored authInfo = %q, want only-user", context.AuthInfo)
+	}
+	if stored.AuthInfos["only-user"] == nil {
+		t.Fatalf("stored auth info map is missing only-user")
+	}
+}
+
+func TestUniqueClusterNameTruncatesToDatabaseLimit(t *testing.T) {
+	setupClusterTestDB(t)
+
+	name := uniqueClusterName(strings.Repeat("a", 140))
+	if len([]rune(name)) != maxStoredClusterNameLength {
+		t.Fatalf("len(name) = %d, want %d", len([]rune(name)), maxStoredClusterNameLength)
+	}
+	if err := model.AddCluster(&model.Cluster{Name: name, Enable: true}); err != nil {
+		t.Fatalf("add cluster: %v", err)
+	}
+
+	next := uniqueClusterName(strings.Repeat("a", 140))
+	if len([]rune(next)) > maxStoredClusterNameLength {
+		t.Fatalf("len(next) = %d, want <= %d", len([]rune(next)), maxStoredClusterNameLength)
+	}
+	if next == name {
+		t.Fatalf("next name should be unique")
+	}
+}
+
+func TestLoadKubeconfigsFromImportSplitsConcatenatedKubeconfigs(t *testing.T) {
+	raw := strings.Join([]string{
+		mustWriteKubeconfig(t, "user-a@sealos", "https://a.example.com", "ca-a", "token-a"),
+		mustWriteKubeconfig(t, "user-b@sealos", "https://b.example.com", "ca-b", "token-b"),
+		mustWriteKubeconfig(t, "user-c@sealos", "https://c.example.com", "ca-c", "token-c"),
+	}, "\n\n")
+
+	configs, warnings, err := loadKubeconfigsFromImport(raw)
+	if err != nil {
+		t.Fatalf("loadKubeconfigsFromImport() error = %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(configs) != 3 {
+		t.Fatalf("len(configs) = %d, want 3", len(configs))
+	}
+
+	for index, config := range configs {
+		wantServer := fmt.Sprintf("https://%c.example.com", 'a'+rune(index))
+		gotServer := config.Clusters["sealos"].Server
+		if gotServer != wantServer {
+			t.Fatalf("config %d server = %q, want %q", index, gotServer, wantServer)
+		}
+	}
+}
+
+func TestImportClustersFromKubeconfigsWithResultPreservesSameClusterNameFromSeparateDocs(t *testing.T) {
+	setupClusterTestDB(t)
+
+	raw := strings.Join([]string{
+		mustWriteKubeconfig(t, "user-a@sealos", "https://a.example.com", "ca-a", "token-a"),
+		mustWriteKubeconfig(t, "user-b@sealos", "https://b.example.com", "ca-b", "token-b"),
+		mustWriteKubeconfig(t, "user-c@sealos", "https://c.example.com", "ca-c", "token-c"),
+	}, "\n\n")
+	configs, _, err := loadKubeconfigsFromImport(raw)
+	if err != nil {
+		t.Fatalf("loadKubeconfigsFromImport() error = %v", err)
+	}
+
+	result := ImportClustersFromKubeconfigsWithResult(configs)
+	if result.Imported != 3 {
+		t.Fatalf("imported = %d, want 3, result=%#v", result.Imported, result)
+	}
+	if strings.Join(result.ImportedNames, ",") != "user-a@sealos,user-b@sealos,user-c@sealos" {
+		t.Fatalf("importedNames = %#v", result.ImportedNames)
+	}
+
+	clusters, err := model.ListClustersWithConfigStatus()
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 3 {
+		t.Fatalf("len(clusters) = %d, want 3", len(clusters))
+	}
+
+	servers := map[string]string{}
+	for _, item := range clusters {
+		if item.ConfigError != nil {
+			t.Fatalf("config decrypt error for %s: %v", item.Cluster.Name, item.ConfigError)
+		}
+		config, err := clientcmd.Load([]byte(item.Cluster.Config))
+		if err != nil {
+			t.Fatalf("load stored kubeconfig for %s: %v", item.Cluster.Name, err)
+		}
+		context := config.Contexts[config.CurrentContext]
+		if context == nil {
+			t.Fatalf("stored config for %s has no current context", item.Cluster.Name)
+		}
+		clusterConfig := config.Clusters[context.Cluster]
+		if clusterConfig == nil {
+			t.Fatalf("stored config for %s has no cluster config", item.Cluster.Name)
+		}
+		servers[item.Cluster.Name] = clusterConfig.Server
+	}
+
+	wantServers := map[string]string{
+		"user-a@sealos": "https://a.example.com",
+		"user-b@sealos": "https://b.example.com",
+		"user-c@sealos": "https://c.example.com",
+	}
+	for name, wantServer := range wantServers {
+		if servers[name] != wantServer {
+			t.Fatalf("stored server for %s = %q, want %q; all=%#v", name, servers[name], wantServer, servers)
+		}
+	}
+}
+
+func TestLoadKubeconfigsFromImportWarnsAboutLossyMergedSingleCluster(t *testing.T) {
+	config := clientcmdapi.NewConfig()
+	config.CurrentContext = "user-a@sealos"
+	config.Clusters = map[string]*clientcmdapi.Cluster{
+		"sealos": {
+			Server:                   "https://a.example.com",
+			CertificateAuthorityData: []byte("ca-a"),
+		},
+	}
+	config.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+		"user-a": {Token: "token-a"},
+		"user-b": {Token: "token-b"},
+	}
+	config.Contexts = map[string]*clientcmdapi.Context{
+		"user-a@sealos": {Cluster: "sealos", AuthInfo: "user-a"},
+		"user-b@sealos": {Cluster: "sealos", AuthInfo: "user-b"},
+	}
+	raw, err := clientcmd.Write(*config)
+	if err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	configs, warnings, err := loadKubeconfigsFromImport(string(raw))
+	if err != nil {
+		t.Fatalf("loadKubeconfigsFromImport() error = %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("len(configs) = %d, want 1", len(configs))
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "server/certificate-authority-data") {
+		t.Fatalf("warnings = %#v, want lossy merge warning", warnings)
+	}
+}
+
+func mustWriteKubeconfig(t *testing.T, contextName, server, ca, token string) string {
+	t.Helper()
+
+	config := clientcmdapi.NewConfig()
+	config.CurrentContext = contextName
+	config.Clusters = map[string]*clientcmdapi.Cluster{
+		"sealos": {
+			Server:                   server,
+			CertificateAuthorityData: []byte(ca),
+		},
+	}
+	config.AuthInfos = map[string]*clientcmdapi.AuthInfo{
+		strings.TrimSuffix(contextName, "@sealos"): {
+			Token: token,
+		},
+	}
+	config.Contexts = map[string]*clientcmdapi.Context{
+		contextName: {
+			Cluster:  "sealos",
+			AuthInfo: strings.TrimSuffix(contextName, "@sealos"),
+		},
+	}
+	raw, err := clientcmd.Write(*config)
+	if err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+	return string(raw)
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

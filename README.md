@@ -29,7 +29,10 @@ Kite Desktop 是基于开源项目
 - macOS Intel: `Kite-<version>-mac-x64.dmg`
 - Windows x64: `Kite-<version>-win-x64.exe`
 
-当前 macOS 构建未签名。如果首次打开时被系统拦截，请到
+当前 macOS 构建会进行 ad-hoc 签名，打包脚本会校验 App bundle 的签名完整性。
+这可以避免未封装 App 在其他电脑上被直接判定为损坏。公开分发时如果希望从浏览器
+下载后完全不出现系统拦截，还需要使用 Apple Developer ID 证书签名并完成 notarization。
+如果你确认安装包来源可信，但 macOS 仍拦截首次打开，请到
 System Settings > Privacy & Security 中允许打开。
 
 ## 从源码构建

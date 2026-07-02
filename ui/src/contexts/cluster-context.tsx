@@ -15,8 +15,8 @@ interface ClusterContextType {
   clusters: Cluster[]
   currentCluster: string | null
   currentClusterData: Cluster | null
-  setCurrentCluster: (clusterName: string) => Promise<void>
-  enterCluster: (clusterName: string) => Promise<void>
+  setCurrentCluster: (clusterName: string) => Promise<boolean>
+  enterCluster: (clusterName: string) => Promise<boolean>
   refreshClusters: () => Promise<void>
   isLoading: boolean
   isSwitching?: boolean
@@ -114,8 +114,36 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [clusters, currentCluster, isLoading])
 
   const setCurrentCluster = async (clusterName: string) => {
-    if (clusterName === currentCluster || isSwitching) {
-      return
+    if (isSwitching) {
+      return false
+    }
+
+    const targetCluster = clusters.find(
+      (cluster) => cluster.name === clusterName
+    )
+    if (!targetCluster) {
+      toast.error('未找到这个集群，请刷新集群列表后重试。', {
+        id: 'cluster-switch',
+      })
+      return false
+    }
+
+    if (targetCluster.enabled === false) {
+      toast.error('这个集群已被停用，不能进入工作台。', {
+        id: 'cluster-switch',
+      })
+      return false
+    }
+
+    if (targetCluster.error) {
+      toast.error(targetCluster.error, {
+        id: 'cluster-switch',
+      })
+      return false
+    }
+
+    if (clusterName === currentCluster) {
+      return true
     }
 
     setIsSwitching(true)
@@ -129,21 +157,25 @@ export const ClusterProvider: React.FC<{ children: React.ReactNode }> = ({
           return !['user', 'auth', 'clusters'].includes(key)
         },
       })
-      toast.success(`Switched to cluster: ${clusterName}`, {
+      toast.success(`已切换到集群：${clusterName}`, {
         id: 'cluster-switch',
       })
+      return true
     } catch (switchError) {
       console.error('Failed to switch cluster:', switchError)
-      toast.error('Failed to switch cluster', {
+      toast.error('切换集群失败，请稍后重试。', {
         id: 'cluster-switch',
       })
+      setCurrentClusterState(null)
+      clearCurrentCluster()
+      return false
     } finally {
       setIsSwitching(false)
     }
   }
 
   const enterCluster = async (clusterName: string) => {
-    await setCurrentCluster(clusterName)
+    return setCurrentCluster(clusterName)
   }
 
   const value: ClusterContextType = {

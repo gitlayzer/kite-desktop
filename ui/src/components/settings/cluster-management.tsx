@@ -187,14 +187,22 @@ export function ClusterManagement({ embedded = false }: ClusterManagementProps) 
 
   const createMutation = useMutation({
     mutationFn: createCluster,
-    onSuccess: async (_result, clusterData) => {
+    onSuccess: async (result, clusterData) => {
       await refreshClusterData()
       if (clusterData.isDefault && currentCluster) {
         await setCurrentCluster(clusterData.name)
       }
-      toast.success(
-        t('clusterManagement.messages.created', 'Cluster created successfully')
-      )
+      if (
+        result.connectionErrors &&
+        Object.keys(result.connectionErrors).length > 0
+      ) {
+        toast.warning(result.message)
+      } else {
+        toast.success(
+          result.message ||
+            t('clusterManagement.messages.created', 'Cluster created successfully')
+        )
+      }
       setShowClusterDialog(false)
     },
     onError: (error: Error) => {

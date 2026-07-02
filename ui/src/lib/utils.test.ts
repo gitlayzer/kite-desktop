@@ -7,6 +7,7 @@ import type { PodMetrics } from '@/types/api'
 import {
   debounce,
   enrichNodeConditionsWithHealth,
+  explainError,
   formatBytes,
   formatChartXTicks,
   formatCPU,
@@ -15,7 +16,6 @@ import {
   formatPodMetrics,
   getAge,
   isCRDNotInstalledError,
-  explainError,
   parseBytes,
   parseRBACError,
   translateError,
@@ -235,11 +235,7 @@ describe('RBAC helpers', () => {
         return options?.namespace || ''
       }
       if (key === 'errors.rbac.summary') {
-        return [
-          options?.verb,
-          options?.resource,
-          options?.scope,
-        ].join('|')
+        return [options?.verb, options?.resource, options?.scope].join('|')
       }
       if (key === 'common.messages.error') {
         return `common:${options?.error}`
@@ -287,6 +283,32 @@ describe('RBAC helpers', () => {
         tf
       )
     ).toBe('crd:Gateway:gateway.networking.k8s.io/v1')
+  })
+
+  it('explains cluster connectivity errors without hiding the cause', () => {
+    const tf = vi.fn((key: string, options?: Record<string, string>) => {
+      return options?.defaultValue || key
+    }) as unknown as TFunction
+
+    expect(
+      explainError(
+        new Error(
+          '集群认证失败：kubeconfig 中的 token 或证书无效、已过期，或当前账号已经失效。请重新导入 kubeconfig。'
+        ),
+        tf,
+        'Pods'
+      )
+    ).toEqual({
+      title: '集群连接不可用',
+      summary:
+        '集群认证失败：kubeconfig 中的 token 或证书无效、已过期，或当前账号已经失效。请重新导入 kubeconfig。',
+      reason:
+        'Kite 已经识别到这个 kubeconfig 无法正常连接 Kubernetes API Server，所以资源列表不会继续空转加载。',
+      suggestion: '请检查 kubeconfig、网络、VPN、代理或集群证书后重新导入。',
+      technicalDetail:
+        '集群认证失败：kubeconfig 中的 token 或证书无效、已过期，或当前账号已经失效。请重新导入 kubeconfig。',
+      kind: 'cluster',
+    })
   })
 
   it('explains Kubernetes forbidden errors in plain language', () => {

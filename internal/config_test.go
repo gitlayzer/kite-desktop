@@ -19,6 +19,40 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+func TestLoadConfigFromEnvDoesNotImportLocalKubeconfig(t *testing.T) {
+	setupTestDB(t)
+	saveManagedSections(t)
+
+	tmpDir := t.TempDir()
+	kubeconfigPath := filepath.Join(tmpDir, "config")
+	kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+  - name: local
+    cluster:
+      server: https://local.example.com
+contexts:
+  - name: local
+    context:
+      cluster: local
+current-context: local
+`
+	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfigPath)
+
+	LoadConfigFromEnv()
+
+	count, err := model.CountClusters()
+	if err != nil {
+		t.Fatalf("count clusters: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("cluster count = %d, want 0", count)
+	}
+}
+
 // setupTestDB initializes an in-memory SQLite database for testing.
 // It returns a cleanup function that restores the original DB.
 func setupTestDB(t *testing.T) {

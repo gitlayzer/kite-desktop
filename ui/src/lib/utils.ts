@@ -275,6 +275,17 @@ export function isCRDNotInstalledError(errorMessage: string): boolean {
   return CRD_NOT_INSTALLED_RE.test(errorMessage)
 }
 
+export function isClusterConnectionError(errorMessage: string): boolean {
+  return [
+    '集群认证失败',
+    '集群证书校验失败',
+    '连接集群超时',
+    '无法连接集群',
+    '无法解析集群地址',
+    '网络无法到达集群',
+  ].some((pattern) => errorMessage.includes(pattern))
+}
+
 function getErrorMessage(error: Error | unknown): string {
   if (error instanceof Error) {
     return error.message
@@ -288,7 +299,7 @@ export interface PlainErrorExplanation {
   reason?: string
   suggestion?: string
   technicalDetail: string
-  kind: 'rbac' | 'crd' | 'generic'
+  kind: 'rbac' | 'crd' | 'cluster' | 'generic'
 }
 
 function getResourceDisplayName(resource: string, t: TFunction): string {
@@ -314,6 +325,18 @@ export function explainError(
       }),
       technicalDetail,
       kind: 'generic',
+    }
+  }
+
+  if (isClusterConnectionError(error.message)) {
+    return {
+      title: '集群连接不可用',
+      summary: error.message,
+      reason:
+        'Kite 已经识别到这个 kubeconfig 无法正常连接 Kubernetes API Server，所以资源列表不会继续空转加载。',
+      suggestion: '请检查 kubeconfig、网络、VPN、代理或集群证书后重新导入。',
+      technicalDetail,
+      kind: 'cluster',
     }
   }
 

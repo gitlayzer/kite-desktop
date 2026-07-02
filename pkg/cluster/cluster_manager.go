@@ -2,7 +2,7 @@ package cluster
 
 import (
 	"encoding/base64"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -15,7 +15,6 @@ import (
 	"github.com/zxh326/kite/pkg/kube"
 	"github.com/zxh326/kite/pkg/model"
 	"github.com/zxh326/kite/pkg/prometheus"
-	"gorm.io/gorm"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -42,7 +41,19 @@ type ClusterManager struct {
 	defaultContext string
 }
 
-const clusterStartupSyncTimeout = 10 * time.Second
+const (
+	clusterStartupSyncTimeout  = 10 * time.Second
+	clusterConnectivityTimeout = 8 * time.Second
+	maxStoredClusterNameLength = 100
+)
+
+type ImportClustersResult struct {
+	Imported      int64
+	Skipped       int64
+	Errors        []string
+	Warnings      []string
+	ImportedNames []string
+}
 
 func createClientSetInCluster(name, prometheusURL string) (*ClientSet, error) {
 	config, err := rest.InClusterConfig()
@@ -70,6 +81,11 @@ func createClientSetFromConfig(name, content, prometheusURL string) (*ClientSet,
 }
 
 func newClientSet(name string, k8sConfig *rest.Config, prometheusURL string) (*ClientSet, error) {
+	k8sConfig = rest.CopyConfig(k8sConfig)
+	if k8sConfig.Timeout == 0 {
+		k8sConfig.Timeout = clusterConnectivityTimeout
+	}
+
 	cs := &ClientSet{
 		Name:             name,
 		DefaultNamespace: "default",
@@ -79,8 +95,15 @@ func newClientSet(name string, k8sConfig *rest.Config, prometheusURL string) (*C
 	cs.K8sClient, err = kube.NewClient(k8sConfig)
 	if err != nil {
 		klog.Warningf("Failed to create k8s client for cluster %s: %v", name, err)
-		return nil, err
+		return nil, fmt.Errorf("%s", clusterConnectionErrorMessage(err))
 	}
+	v, err := cs.K8sClient.ClientSet.Discovery().ServerVersion()
+	if err != nil {
+		cs.K8sClient.Stop(name)
+		return nil, fmt.Errorf("%s", clusterConnectionErrorMessage(err))
+	}
+	cs.Version = v.String()
+
 	if prometheusURL == "" {
 		prometheusURL = discoveryPrometheusURL(cs.K8sClient)
 		if prometheusURL != "" {
@@ -104,14 +127,45 @@ func newClientSet(name string, k8sConfig *rest.Config, prometheusURL string) (*C
 			klog.Warningf("Failed to create Prometheus client for cluster %s, some features may not work as expected, err: %v", name, err)
 		}
 	}
-	v, err := cs.K8sClient.ClientSet.Discovery().ServerVersion()
-	if err != nil {
-		klog.Warningf("Failed to get server version for cluster %s: %v", name, err)
-	} else {
-		cs.Version = v.String()
-	}
 	klog.Infof("Loaded K8s client for cluster: %s, version: %s", name, cs.Version)
 	return cs, nil
+}
+
+func clusterConnectionErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	detail := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(detail)
+
+	switch {
+	case strings.Contains(lower, "the server has asked for the client to provide credentials"),
+		strings.Contains(lower, "unauthorized"),
+		strings.Contains(lower, "invalid bearer token"),
+		strings.Contains(lower, "token has expired"):
+		return fmt.Sprintf("集群认证失败：kubeconfig 中的 token 或证书无效、已过期，或当前账号已经失效。请重新导入 kubeconfig。原始错误：%s", detail)
+	case strings.Contains(lower, "x509:"),
+		strings.Contains(lower, "certificate signed by unknown authority"),
+		strings.Contains(lower, "certificate is not trusted"),
+		strings.Contains(lower, "tls: failed to verify certificate"):
+		return fmt.Sprintf("集群证书校验失败：kubeconfig 中的证书信息与 API Server 不匹配，或证书在这台电脑上无法通过校验。请重新导出 kubeconfig。原始错误：%s", detail)
+	case strings.Contains(lower, "context deadline exceeded"),
+		strings.Contains(lower, "client.timeout exceeded"),
+		strings.Contains(lower, "i/o timeout"),
+		strings.Contains(lower, "net/http: timeout"):
+		return fmt.Sprintf("连接集群超时：请检查网络、VPN、代理、防火墙，以及 kubeconfig 里的 server 地址是否能访问。原始错误：%s", detail)
+	case strings.Contains(lower, "connection refused"):
+		return fmt.Sprintf("无法连接集群：API Server 拒绝连接，请检查 kubeconfig 的 server 地址和端口是否正确。原始错误：%s", detail)
+	case strings.Contains(lower, "no such host"),
+		strings.Contains(lower, "server misbehaving"):
+		return fmt.Sprintf("无法解析集群地址：请检查 DNS、网络环境，或 kubeconfig 的 server 域名是否正确。原始错误：%s", detail)
+	case strings.Contains(lower, "no route to host"),
+		strings.Contains(lower, "network is unreachable"):
+		return fmt.Sprintf("网络无法到达集群：请检查当前网络、VPN、代理或防火墙设置。原始错误：%s", detail)
+	}
+
+	return fmt.Sprintf("无法连接集群：%s", detail)
 }
 
 func defaultNamespaceFromKubeconfig(content string) string {
@@ -203,9 +257,6 @@ func (cm *ClusterManager) GetClientSet(clusterName string) (*ClientSet, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
-	if len(cm.clusters) == 0 {
-		return nil, fmt.Errorf("no clusters available")
-	}
 	if clusterName == "" {
 		clusterName = cm.defaultContext
 		if clusterName == "" {
@@ -218,65 +269,341 @@ func (cm *ClusterManager) GetClientSet(clusterName string) (*ClientSet, error) {
 	if cluster, ok := cm.clusters[clusterName]; ok {
 		return cluster, nil
 	}
+	if errMsg, ok := cm.errors[clusterName]; ok {
+		return nil, fmt.Errorf("%s", errMsg)
+	}
+	if len(cm.clusters) == 0 {
+		if len(cm.errors) > 0 {
+			names := make([]string, 0, len(cm.errors))
+			for name := range cm.errors {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("%s", cm.errors[names[0]])
+		}
+		return nil, fmt.Errorf("no clusters available")
+	}
 	return nil, fmt.Errorf("cluster not found: %s", clusterName)
 }
 
 func ImportClustersFromKubeconfig(kubeconfig *clientcmdapi.Config) int64 {
-	existingIdentities := existingClusterIdentities()
-	contextNames := importableKubeconfigContextNames(kubeconfig, existingIdentities)
-	if len(contextNames) == 0 {
-		return 0
+	return ImportClustersFromKubeconfigWithResult(kubeconfig).Imported
+}
+
+func loadKubeconfigsFromImport(content string) ([]*clientcmdapi.Config, []string, error) {
+	blocks := splitKubeconfigImportDocuments(content)
+	if len(blocks) == 0 {
+		return nil, nil, fmt.Errorf("kubeconfig 内容不能为空")
 	}
 
-	importedCount := 0
-	for _, contextName := range contextNames {
-		context := kubeconfig.Contexts[contextName]
+	configs := make([]*clientcmdapi.Config, 0, len(blocks))
+	warnings := make([]string, 0)
+	for index, block := range blocks {
+		kubeconfig, err := clientcmd.Load([]byte(block))
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("第 %d 段 kubeconfig 解析失败：%v", index+1, err))
+			continue
+		}
+		if len(kubeconfig.Contexts) == 0 {
+			warnings = append(warnings, fmt.Sprintf("第 %d 段 kubeconfig 没有 contexts，已跳过。", index+1))
+			continue
+		}
+		warnings = append(warnings, kubeconfigImportWarnings(kubeconfig)...)
+		configs = append(configs, kubeconfig)
+	}
+
+	if len(configs) == 0 {
+		if len(warnings) > 0 {
+			return nil, warnings, fmt.Errorf("%s", strings.Join(warnings, "; "))
+		}
+		return nil, warnings, fmt.Errorf("kubeconfig 中没有可用的 context")
+	}
+
+	return configs, warnings, nil
+}
+
+func splitKubeconfigImportDocuments(content string) []string {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+
+	documentBlocks := splitYAMLDocumentBlocks(normalized)
+	blocks := make([]string, 0, len(documentBlocks))
+	for _, block := range documentBlocks {
+		blocks = append(blocks, splitConcatenatedKubeconfigs(block)...)
+	}
+	return blocks
+}
+
+func splitYAMLDocumentBlocks(content string) []string {
+	lines := strings.Split(content, "\n")
+	blocks := make([]string, 0, 1)
+	current := make([]string, 0, len(lines))
+
+	flush := func() {
+		block := strings.TrimSpace(strings.Join(current, "\n"))
+		if block != "" {
+			blocks = append(blocks, block)
+		}
+		current = current[:0]
+	}
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			flush()
+			continue
+		}
+		current = append(current, line)
+	}
+	flush()
+
+	return blocks
+}
+
+func splitConcatenatedKubeconfigs(content string) []string {
+	lines := strings.Split(content, "\n")
+	start := 0
+	seenDocumentStart := false
+	blocks := make([]string, 0, 1)
+
+	flush := func(end int) {
+		block := strings.TrimSpace(strings.Join(lines[start:end], "\n"))
+		if block != "" {
+			blocks = append(blocks, block)
+		}
+	}
+
+	for index, line := range lines {
+		if !isTopLevelAPIVersionLine(line) {
+			continue
+		}
+		if seenDocumentStart {
+			flush(index)
+			start = index
+		}
+		seenDocumentStart = true
+	}
+
+	flush(len(lines))
+	return blocks
+}
+
+func isTopLevelAPIVersionLine(line string) bool {
+	if line == "" || line[0] == ' ' || line[0] == '\t' {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(line), "apiVersion:")
+}
+
+func kubeconfigImportWarnings(kubeconfig *clientcmdapi.Config) []string {
+	if kubeconfig == nil || len(kubeconfig.Contexts) <= 1 || len(kubeconfig.Clusters) != 1 {
+		return nil
+	}
+
+	contextClusterNames := make(map[string]struct{}, len(kubeconfig.Contexts))
+	for _, context := range kubeconfig.Contexts {
 		if context == nil {
 			continue
 		}
-		clusterConfig := kubeconfig.Clusters[context.Cluster]
-		if clusterConfig == nil {
+		contextClusterNames[context.Cluster] = struct{}{}
+	}
+	if len(contextClusterNames) != 1 {
+		return nil
+	}
+
+	return []string{"检测到多个 context 共用同一个 cluster 配置。Kite 会按 context 拆成独立集群导入；如果这些 context 原本来自不同集群，手工合并时可能已经丢失各自的 server/certificate-authority-data，请直接粘贴多个原始 kubeconfig 块或为每个 cluster 使用唯一名称。"}
+}
+
+func ImportClustersFromKubeconfigsWithResult(kubeconfigs []*clientcmdapi.Config) ImportClustersResult {
+	result := ImportClustersResult{}
+	for _, kubeconfig := range kubeconfigs {
+		result.merge(ImportClustersFromKubeconfigWithResult(kubeconfig))
+	}
+	return result
+}
+
+func (result *ImportClustersResult) merge(next ImportClustersResult) {
+	result.Imported += next.Imported
+	result.Skipped += next.Skipped
+	result.Errors = append(result.Errors, next.Errors...)
+	result.Warnings = append(result.Warnings, next.Warnings...)
+	result.ImportedNames = append(result.ImportedNames, next.ImportedNames...)
+}
+
+func ImportClustersFromKubeconfigWithResult(kubeconfig *clientcmdapi.Config) ImportClustersResult {
+	existingIdentities := existingClusterIdentities()
+	contextNames := importableKubeconfigContextNames(kubeconfig, existingIdentities)
+	if len(contextNames) == 0 {
+		return ImportClustersResult{Skipped: int64(len(kubeconfigContextNames(kubeconfig)))}
+	}
+
+	result := ImportClustersResult{}
+	for _, contextName := range contextNames {
+		context := kubeconfig.Contexts[contextName]
+		resolved, err := resolveKubeconfigContext(kubeconfig, contextName, context)
+		if err != nil {
+			result.Skipped++
+			result.Errors = append(result.Errors, err.Error())
 			continue
 		}
+		result.Warnings = append(result.Warnings, resolved.warnings...)
 
+		clusterName := uniqueClusterName(contextName)
+		contextCopy := *resolved.context
+		contextCopy.Cluster = clusterName
 		authInfos := map[string]*clientcmdapi.AuthInfo{}
-		if context.AuthInfo != "" {
-			if authInfo := kubeconfig.AuthInfos[context.AuthInfo]; authInfo != nil {
-				authInfos[context.AuthInfo] = authInfo
+		if resolved.authInfo != nil {
+			authName := resolved.authName
+			if authName == "" {
+				authName = clusterName + "-user"
 			}
+			contextCopy.AuthInfo = authName
+			authInfos[authName] = resolved.authInfo
 		}
+		clusterConfig := *resolved.cluster
 
 		config := clientcmdapi.NewConfig()
 		config.Contexts = map[string]*clientcmdapi.Context{
-			contextName: context,
+			clusterName: &contextCopy,
 		}
-		config.CurrentContext = contextName
+		config.CurrentContext = clusterName
 		config.Clusters = map[string]*clientcmdapi.Cluster{
-			context.Cluster: clusterConfig,
+			clusterName: &clusterConfig,
 		}
 		config.AuthInfos = authInfos
 		configStr, err := clientcmd.Write(*config)
 		if err != nil {
+			result.Skipped++
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", contextName, err))
 			continue
+		}
+		isDefault := contextName == kubeconfig.CurrentContext || (kubeconfig.CurrentContext == "" && result.Imported == 0)
+		if exists, err := model.ClusterNameExists(clusterName); err != nil {
+			result.Skipped++
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", contextName, err))
+			continue
+		} else if exists {
+			result.Skipped++
+			continue
+		}
+		if isDefault {
+			if err := model.ClearDefaultCluster(); err != nil {
+				result.Skipped++
+				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", contextName, err))
+				continue
+			}
 		}
 		cluster := model.Cluster{
-			Name:      contextName,
+			Name:      clusterName,
 			Config:    model.SecretString(configStr),
-			IsDefault: contextName == kubeconfig.CurrentContext || (kubeconfig.CurrentContext == "" && importedCount == 0),
+			IsDefault: isDefault,
 			Enable:    true,
 		}
-		if _, err := model.GetClusterByName(contextName); err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				if err := model.AddCluster(&cluster); err != nil {
-					continue
-				}
-				importedCount++
-				klog.Infof("Imported cluster success: %s", contextName)
-			}
+		if err := model.AddCluster(&cluster); err != nil {
+			result.Skipped++
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", contextName, err))
 			continue
 		}
+		result.Imported++
+		result.ImportedNames = append(result.ImportedNames, clusterName)
+		klog.Infof("Imported cluster success: %s", clusterName)
 	}
-	return int64(importedCount)
+	return result
+}
+
+type resolvedKubeconfigContext struct {
+	context  *clientcmdapi.Context
+	cluster  *clientcmdapi.Cluster
+	authName string
+	authInfo *clientcmdapi.AuthInfo
+	warnings []string
+}
+
+func resolveKubeconfigContext(
+	kubeconfig *clientcmdapi.Config,
+	contextName string,
+	context *clientcmdapi.Context,
+) (*resolvedKubeconfigContext, error) {
+	if kubeconfig == nil {
+		return nil, fmt.Errorf("%s: kubeconfig 为空", contextName)
+	}
+	if context == nil {
+		return nil, fmt.Errorf("%s: context 为空", contextName)
+	}
+
+	contextCopy := *context
+	warnings := make([]string, 0)
+
+	clusterName := strings.TrimSpace(contextCopy.Cluster)
+	clusterConfig := kubeconfig.Clusters[clusterName]
+	if clusterConfig == nil {
+		fallbackName, fallbackCluster := singleKubeconfigCluster(kubeconfig)
+		if fallbackCluster == nil {
+			return nil, fmt.Errorf("%s: context 引用的 cluster %q 不存在", contextName, contextCopy.Cluster)
+		}
+		warnings = append(warnings, fmt.Sprintf("%s: context 引用的 cluster %q 不存在，已使用 kubeconfig 中唯一的 cluster %q。", contextName, contextCopy.Cluster, fallbackName))
+		clusterName = fallbackName
+		clusterConfig = fallbackCluster
+		contextCopy.Cluster = fallbackName
+	}
+	clusterCopy := *clusterConfig
+
+	authName := strings.TrimSpace(contextCopy.AuthInfo)
+	var authInfo *clientcmdapi.AuthInfo
+	if authName != "" {
+		authInfo = kubeconfig.AuthInfos[authName]
+		if authInfo == nil {
+			fallbackName, fallbackAuthInfo := singleKubeconfigAuthInfo(kubeconfig)
+			if fallbackAuthInfo == nil {
+				return nil, fmt.Errorf("%s: context 引用的 user %q 不存在", contextName, contextCopy.AuthInfo)
+			}
+			warnings = append(warnings, fmt.Sprintf("%s: context 引用的 user %q 不存在，已使用 kubeconfig 中唯一的 user %q。", contextName, contextCopy.AuthInfo, fallbackName))
+			authName = fallbackName
+			authInfo = fallbackAuthInfo
+			contextCopy.AuthInfo = fallbackName
+		}
+	} else {
+		fallbackName, fallbackAuthInfo := singleKubeconfigAuthInfo(kubeconfig)
+		if fallbackAuthInfo != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: context 未指定 user，已使用 kubeconfig 中唯一的 user %q。", contextName, fallbackName))
+			authName = fallbackName
+			authInfo = fallbackAuthInfo
+			contextCopy.AuthInfo = fallbackName
+		}
+	}
+
+	var authCopy *clientcmdapi.AuthInfo
+	if authInfo != nil {
+		copyValue := *authInfo
+		authCopy = &copyValue
+	}
+
+	return &resolvedKubeconfigContext{
+		context:  &contextCopy,
+		cluster:  &clusterCopy,
+		authName: authName,
+		authInfo: authCopy,
+		warnings: warnings,
+	}, nil
+}
+
+func singleKubeconfigCluster(kubeconfig *clientcmdapi.Config) (string, *clientcmdapi.Cluster) {
+	if kubeconfig == nil || len(kubeconfig.Clusters) != 1 {
+		return "", nil
+	}
+	for name, cluster := range kubeconfig.Clusters {
+		return name, cluster
+	}
+	return "", nil
+}
+
+func singleKubeconfigAuthInfo(kubeconfig *clientcmdapi.Config) (string, *clientcmdapi.AuthInfo) {
+	if kubeconfig == nil || len(kubeconfig.AuthInfos) != 1 {
+		return "", nil
+	}
+	for name, authInfo := range kubeconfig.AuthInfos {
+		return name, authInfo
+	}
+	return "", nil
 }
 
 func importableKubeconfigContextNames(kubeconfig *clientcmdapi.Config, initialSeen ...map[string]struct{}) []string {
@@ -309,11 +636,11 @@ func importableKubeconfigContextNames(kubeconfig *clientcmdapi.Config, initialSe
 		if context == nil {
 			continue
 		}
-		clusterConfig := kubeconfig.Clusters[context.Cluster]
-		if clusterConfig == nil {
+		resolved, err := resolveKubeconfigContext(kubeconfig, name, context)
+		if err != nil {
 			continue
 		}
-		key := kubeconfigClusterIdentity(context.Cluster, clusterConfig)
+		key := kubeconfigContextIdentity(kubeconfig, name, resolved.context, resolved.cluster)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -324,18 +651,81 @@ func importableKubeconfigContextNames(kubeconfig *clientcmdapi.Config, initialSe
 	return result
 }
 
+func kubeconfigContextNames(kubeconfig *clientcmdapi.Config) []string {
+	if kubeconfig == nil || len(kubeconfig.Contexts) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(kubeconfig.Contexts))
+	for name := range kubeconfig.Contexts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func uniqueClusterName(baseName string) string {
+	name := normalizeClusterName(baseName)
+
+	exists, err := model.ClusterNameExists(name)
+	if err != nil || !exists {
+		return name
+	}
+
+	for i := 2; ; i++ {
+		candidate := clusterNameWithSuffix(name, fmt.Sprintf("-%d", i))
+		exists, err := model.ClusterNameExists(candidate)
+		if err != nil || !exists {
+			return candidate
+		}
+	}
+}
+
+func normalizeClusterName(baseName string) string {
+	name := strings.TrimSpace(baseName)
+	name = strings.NewReplacer("\r", "-", "\n", "-", "\t", "-").Replace(name)
+	if name == "" {
+		name = "cluster"
+	}
+	return truncateClusterName(name, maxStoredClusterNameLength)
+}
+
+func clusterNameWithSuffix(baseName, suffix string) string {
+	name := normalizeClusterName(baseName)
+	if len([]rune(suffix)) >= maxStoredClusterNameLength {
+		return truncateClusterName(suffix, maxStoredClusterNameLength)
+	}
+	prefixLimit := maxStoredClusterNameLength - len([]rune(suffix))
+	return truncateClusterName(name, prefixLimit) + suffix
+}
+
+func truncateClusterName(name string, maxLength int) string {
+	if maxLength <= 0 {
+		return ""
+	}
+	runes := []rune(name)
+	if len(runes) <= maxLength {
+		return name
+	}
+	return string(runes[:maxLength])
+}
+
 func existingClusterIdentities() map[string]struct{} {
 	if model.DB == nil {
 		return nil
 	}
 
-	clusters, err := model.ListClusters()
+	clusters, err := model.ListClustersWithConfigStatus()
 	if err != nil || len(clusters) == 0 {
 		return nil
 	}
 
 	identities := make(map[string]struct{}, len(clusters))
-	for _, cluster := range clusters {
+	for _, item := range clusters {
+		if item.ConfigError != nil {
+			continue
+		}
+		cluster := item.Cluster
 		if cluster == nil || cluster.InCluster || strings.TrimSpace(string(cluster.Config)) == "" {
 			continue
 		}
@@ -348,11 +738,11 @@ func existingClusterIdentities() map[string]struct{} {
 			if context == nil {
 				continue
 			}
-			clusterConfig := kubeconfig.Clusters[context.Cluster]
-			if clusterConfig == nil {
+			resolved, err := resolveKubeconfigContext(kubeconfig, name, context)
+			if err != nil {
 				continue
 			}
-			identities[kubeconfigClusterIdentity(context.Cluster, clusterConfig)] = struct{}{}
+			identities[kubeconfigContextIdentity(kubeconfig, name, resolved.context, resolved.cluster)] = struct{}{}
 		}
 	}
 	return identities
@@ -378,6 +768,52 @@ func kubeconfigClusterIdentity(clusterName string, clusterConfig *clientcmdapi.C
 	}, "\x00")
 }
 
+func kubeconfigContextIdentity(
+	kubeconfig *clientcmdapi.Config,
+	contextName string,
+	context *clientcmdapi.Context,
+	clusterConfig *clientcmdapi.Cluster,
+) string {
+	if context == nil {
+		return "context:" + contextName
+	}
+	authInfoName := strings.TrimSpace(context.AuthInfo)
+	authIdentity := authInfoName
+	if kubeconfig != nil && authInfoName != "" {
+		authIdentity = kubeconfigAuthIdentity(authInfoName, kubeconfig.AuthInfos[authInfoName])
+	}
+	return strings.Join([]string{
+		kubeconfigClusterIdentity(context.Cluster, clusterConfig),
+		authIdentity,
+		strings.TrimSpace(context.Namespace),
+	}, "\x00")
+}
+
+func kubeconfigAuthIdentity(name string, authInfo *clientcmdapi.AuthInfo) string {
+	if authInfo == nil {
+		return "auth-name:" + name
+	}
+	execConfig, _ := json.Marshal(authInfo.Exec)
+	authProvider, _ := json.Marshal(authInfo.AuthProvider)
+	impersonateExtra, _ := json.Marshal(authInfo.ImpersonateUserExtra)
+	return strings.Join([]string{
+		authInfo.Username,
+		authInfo.Password,
+		authInfo.Token,
+		authInfo.TokenFile,
+		authInfo.ClientCertificate,
+		base64.StdEncoding.EncodeToString(authInfo.ClientCertificateData),
+		authInfo.ClientKey,
+		base64.StdEncoding.EncodeToString(authInfo.ClientKeyData),
+		authInfo.Impersonate,
+		authInfo.ImpersonateUID,
+		strings.Join(authInfo.ImpersonateGroups, ","),
+		string(impersonateExtra),
+		string(execConfig),
+		string(authProvider),
+	}, "\x00")
+}
+
 var (
 	syncNow = make(chan struct{}, 1)
 )
@@ -399,7 +835,7 @@ func syncClusters(cm *ClusterManager, readyCh chan<- struct{}) error {
 		}()
 	}
 
-	clusters, err := model.ListClusters()
+	clusters, err := model.ListClustersWithConfigStatus()
 	if err != nil {
 		klog.Warningf("list cluster err: %v", err)
 		time.Sleep(5 * time.Second)
@@ -413,20 +849,37 @@ func syncClusters(cm *ClusterManager, readyCh chan<- struct{}) error {
 		err       error
 	}
 	buildQueue := make([]*model.Cluster, 0)
-	for _, cluster := range clusters {
+	for _, item := range clusters {
+		cluster := item.Cluster
 		dbClusterMap[cluster.Name] = cluster
-		if cluster.IsDefault {
+		if cluster.IsDefault && cluster.Enable && item.ConfigError == nil {
 			nextDefaultContext = cluster.Name
 		}
 		cm.mu.RLock()
 		current, currentExist := cm.clusters[cluster.Name]
 		cm.mu.RUnlock()
+		if item.ConfigError != nil {
+			if currentExist {
+				cm.mu.Lock()
+				delete(cm.clusters, cluster.Name)
+				cm.mu.Unlock()
+				if current != nil && current.K8sClient != nil {
+					current.K8sClient.Stop(cluster.Name)
+				}
+			}
+			cm.mu.Lock()
+			cm.errors[cluster.Name] = clusterConfigErrorMessage(item.ConfigError)
+			cm.mu.Unlock()
+			continue
+		}
 		if shouldUpdateCluster(current, cluster) {
 			if currentExist {
 				cm.mu.Lock()
 				delete(cm.clusters, cluster.Name)
 				cm.mu.Unlock()
-				current.K8sClient.Stop(cluster.Name)
+				if current != nil && current.K8sClient != nil {
+					current.K8sClient.Stop(cluster.Name)
+				}
 			}
 			if cluster.Enable {
 				buildQueue = append(buildQueue, cluster)
@@ -520,6 +973,7 @@ func shouldUpdateCluster(cs *ClientSet, cluster *model.Cluster) bool {
 	version, err := cs.K8sClient.ClientSet.Discovery().ServerVersion()
 	if err != nil {
 		klog.Warningf("Failed to get server version for cluster %s: %v", cluster.Name, err)
+		return true
 	} else if version.String() != cs.Version {
 		klog.Infof("Server version changed for cluster %s, updating, old: %s, new: %s", cluster.Name, cs.Version, version.String())
 		return true

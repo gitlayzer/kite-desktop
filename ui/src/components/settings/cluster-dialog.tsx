@@ -104,7 +104,8 @@ function ClusterDialogContent({
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="cluster-name">
-              {t('clusterManagement.dialog.name', 'Cluster Name')} *
+              {t('clusterManagement.dialog.name', 'Cluster Name')}
+              {isEditMode ? ' *' : ''}
             </Label>
             <Input
               id="cluster-name"
@@ -114,7 +115,7 @@ function ClusterDialogContent({
                 'clusterManagement.dialog.namePlaceholder',
                 'e.g., production, staging'
               )}
-              required
+              required={isEditMode}
             />
           </div>
 
@@ -260,7 +261,9 @@ function ClusterDialogContent({
           <Button
             type="submit"
             disabled={
-              !formData.name ||
+              (!formData.inCluster && !isEditMode
+                ? !formData.config
+                : !formData.name) ||
               (!isEditMode && !formData.inCluster && !formData.config)
             }
           >

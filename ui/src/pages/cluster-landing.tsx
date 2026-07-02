@@ -1,7 +1,6 @@
 import { useState, type MouseEvent, type PointerEvent } from 'react'
 import {
   IconAlertCircle,
-  IconCircleCheckFilled,
   IconDatabase,
   IconPlus,
   IconServer,
@@ -25,8 +24,13 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { DeleteConfirmationDialog } from '@/components/delete-confirmation-dialog'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import { DeleteConfirmationDialog } from '@/components/delete-confirmation-dialog'
 import { SidebarClusterManagement } from '@/components/sidebar-cluster-management'
 
 function formatClusterType(cluster: Cluster) {
@@ -54,18 +58,52 @@ function ClusterCard({
   isDeleting: boolean
 }) {
   const hasError = Boolean(cluster.error)
+  const isConfigError = cluster.error?.includes('无法解密') ?? false
+  const errorLabel = isConfigError ? '配置损坏' : '连接异常'
   const isDisabled = hasError || cluster.enabled === false
+  const canEnter = !isDisabled && !isDeleting
+  const version = cluster.version || '-'
+  const statusDot = (
+    <span
+      className={cn(
+        'inline-block h-2.5 w-2.5 shrink-0 rounded-full',
+        hasError
+          ? 'bg-destructive shadow-[0_0_0_3px_hsl(var(--destructive)/0.12)]'
+          : 'bg-green-500 shadow-[0_0_0_3px_rgb(34_197_94/0.14)]'
+      )}
+      aria-label={hasError ? errorLabel : '连接正常'}
+      title={hasError ? undefined : '连接正常'}
+    />
+  )
 
   return (
     <Card
       className={cn(
-        'group overflow-hidden rounded-lg border bg-card/70 py-0 transition-colors hover:border-primary/50',
+        'group overflow-hidden rounded-lg border bg-card/70 py-0 transition-colors',
+        canEnter &&
+          'cursor-pointer hover:border-primary/50 hover:bg-primary/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        isDisabled && 'opacity-85',
         isActive && 'border-primary/60 bg-primary/5'
       )}
+      role={canEnter ? 'button' : undefined}
+      tabIndex={canEnter ? 0 : undefined}
+      aria-disabled={!canEnter}
+      onClick={() => {
+        if (canEnter) {
+          onEnter(cluster.name)
+        }
+      }}
+      onKeyDown={(event) => {
+        if (!canEnter || (event.key !== 'Enter' && event.key !== ' ')) {
+          return
+        }
+        event.preventDefault()
+        onEnter(cluster.name)
+      }}
     >
-      <CardHeader className="border-b px-5 py-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-3">
+      <CardHeader className="px-5 py-4">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
+          <div className="flex min-w-0 items-center gap-3 overflow-hidden">
             <div
               className={cn(
                 'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg',
@@ -76,12 +114,38 @@ function ClusterCard({
             >
               <IconServer className="h-6 w-6" />
             </div>
-            <div className="min-w-0">
-              <CardTitle className="truncate text-lg">
+            <div className="min-w-0 max-w-full overflow-hidden">
+              <CardTitle className="truncate text-lg" title={cluster.name}>
                 {cluster.name}
               </CardTitle>
-              <CardDescription className="mt-1 truncate">
-                {cluster.description || formatClusterType(cluster)}
+              <CardDescription className="mt-1 flex min-w-0 items-center gap-2">
+                <span className="shrink-0">{formatClusterType(cluster)}</span>
+                <span className="text-muted-foreground/60">·</span>
+                <span className="truncate font-mono text-xs">{version}</span>
+                <span className="text-muted-foreground/60">·</span>
+                {hasError ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        className="inline-flex h-5 w-5 shrink-0 cursor-help items-center justify-center"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {statusDot}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="top"
+                      align="start"
+                      className="max-w-[34rem] whitespace-normal bg-popover px-3 py-2 text-left text-xs leading-5 text-popover-foreground shadow-lg"
+                    >
+                      {cluster.error}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
+                    {statusDot}
+                  </span>
+                )}
               </CardDescription>
             </div>
           </div>
@@ -96,53 +160,16 @@ function ClusterCard({
               disabled={isDeleting}
               title="删除集群"
               aria-label={`删除集群 ${cluster.name}`}
-              onClick={() => onDelete(cluster)}
+              onClick={(event) => {
+                event.stopPropagation()
+                onDelete(cluster)
+              }}
             >
               <IconTrash className="h-4 w-4" />
             </Button>
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4 px-5 py-4">
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-md border bg-muted/20 p-3">
-            <div className="text-xs text-muted-foreground">版本</div>
-            <div className="mt-1 truncate font-mono">
-              {cluster.version || '-'}
-            </div>
-          </div>
-          <div className="rounded-md border bg-muted/20 p-3">
-            <div className="text-xs text-muted-foreground">类型</div>
-            <div className="mt-1 truncate">{formatClusterType(cluster)}</div>
-          </div>
-        </div>
-
-        <div
-          className={cn(
-            'flex items-start gap-2 rounded-md border px-3 py-2 text-sm',
-            hasError
-              ? 'border-destructive/30 bg-destructive/5 text-destructive'
-              : 'border-green-500/20 bg-green-500/5 text-green-600 dark:text-green-400'
-          )}
-        >
-          {hasError ? (
-            <IconAlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          ) : (
-            <IconCircleCheckFilled className="mt-0.5 h-4 w-4 shrink-0" />
-          )}
-          <span className="min-w-0 break-words">
-            {cluster.error || '连接正常，可以进入工作台'}
-          </span>
-        </div>
-
-        <Button
-          className="w-full"
-          disabled={isDisabled}
-          onClick={() => onEnter(cluster.name)}
-        >
-          进入集群
-        </Button>
-      </CardContent>
     </Card>
   )
 }
@@ -152,7 +179,7 @@ function ClusterLandingSkeleton() {
     <div className="grid gap-4 @3xl/main:grid-cols-2 @6xl/main:grid-cols-3">
       {Array.from({ length: 3 }).map((_, index) => (
         <Card key={index} className="rounded-lg py-0">
-          <CardHeader className="border-b px-5 py-4">
+          <CardHeader className="px-5 py-4">
             <div className="flex items-center gap-3">
               <Skeleton className="h-11 w-11" />
               <div className="space-y-2">
@@ -161,10 +188,6 @@ function ClusterLandingSkeleton() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4 px-5 py-4">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </CardContent>
         </Card>
       ))}
     </div>
@@ -181,6 +204,7 @@ export function ClusterLandingPage() {
     enterCluster,
     isLoading,
     isSwitching,
+    error,
     refreshClusters,
   } = useCluster()
   const [isAddOpen, setIsAddOpen] = useState(false)
@@ -194,9 +218,7 @@ export function ClusterLandingPage() {
         queryClient.invalidateQueries({ queryKey: ['clusters'] }),
       ])
       await refreshClusters()
-      toast.success(
-        t('clusterManagement.messages.deleted', '集群删除成功')
-      )
+      toast.success(t('clusterManagement.messages.deleted', '集群删除成功'))
       setDeletingCluster(null)
     },
     onError: (error: Error) => {
@@ -208,8 +230,10 @@ export function ClusterLandingPage() {
   })
 
   const handleEnterCluster = async (clusterName: string) => {
-    await enterCluster(clusterName)
-    navigate('/dashboard')
+    const entered = await enterCluster(clusterName)
+    if (entered) {
+      navigate('/dashboard')
+    }
   }
 
   const handleDeleteCluster = () => {
@@ -220,7 +244,11 @@ export function ClusterLandingPage() {
   }
 
   const handleWindowDragStart = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !window.kiteWindow || isNoDragTarget(event.target)) {
+    if (
+      event.button !== 0 ||
+      !window.kiteWindow ||
+      isNoDragTarget(event.target)
+    ) {
       return
     }
 
@@ -232,7 +260,10 @@ export function ClusterLandingPage() {
   }
 
   const handleWindowDragMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (!window.kiteWindow || !event.currentTarget.hasPointerCapture(event.pointerId)) {
+    if (
+      !window.kiteWindow ||
+      !event.currentTarget.hasPointerCapture(event.pointerId)
+    ) {
       return
     }
 
@@ -297,7 +328,32 @@ export function ClusterLandingPage() {
           </div>
         </CardHeader>
         <CardContent className="px-6 py-5">
-          {isLoading ? (
+          {error ? (
+            <div className="flex flex-col items-center justify-center gap-4 py-16 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
+                <IconAlertCircle className="h-7 w-7" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-xl font-semibold">集群列表加载失败</h2>
+                <p className="max-w-xl break-words text-sm text-muted-foreground">
+                  {error.message ||
+                    '无法读取当前集群配置。你仍然可以刷新或添加新的 kubeconfig。'}
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => void refreshClusters()}
+                >
+                  {t('common.actions.refresh', '刷新')}
+                </Button>
+                <Button onClick={() => setIsAddOpen(true)}>
+                  <IconPlus className="h-4 w-4" />
+                  {t('clusterManagement.actions.add', '添加集群')}
+                </Button>
+              </div>
+            </div>
+          ) : isLoading ? (
             <ClusterLandingSkeleton />
           ) : clusters.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-4 py-16 text-center">

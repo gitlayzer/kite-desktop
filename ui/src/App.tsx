@@ -21,7 +21,7 @@ import { useCluster } from './hooks/use-cluster'
 
 function ClusterGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
-  const { isLoading, error } = useCluster()
+  const { isLoading } = useCluster()
 
   if (isLoading) {
     return (
@@ -29,16 +29,6 @@ function ClusterGate({ children }: { children: ReactNode }) {
         <div className="flex items-center space-x-2">
           <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-blue-600" />
           <span>{t('cluster.loading')}</span>
-        </div>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="text-red-500">
-          <p>{t('cluster.error', { error: error.message })}</p>
         </div>
       </div>
     )

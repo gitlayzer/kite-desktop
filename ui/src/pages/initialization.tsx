@@ -203,8 +203,18 @@ export function InitializationPage() {
 
     setIsSubmitting(true)
     try {
-      await importClusters({ config: kubeconfig, inCluster: isInCluster })
-      toast.success(t('initialization.step2.importSuccess'))
+      const result = await importClusters({
+        config: kubeconfig,
+        inCluster: isInCluster,
+      })
+      if (
+        result.connectionErrors &&
+        Object.keys(result.connectionErrors).length > 0
+      ) {
+        toast.warning(result.message)
+      } else {
+        toast.success(result.message || t('initialization.step2.importSuccess'))
+      }
       await refetch()
       // Will redirect to home page when initialized becomes true
     } catch (err) {
@@ -423,7 +433,7 @@ export function InitializationPage() {
                         <p className="text-xs text-gray-500">
                           {t('initialization.step2.fileHint', {
                             defaultValue:
-                              'Select your kubeconfig file (usually located at ~/.kube/config)',
+                              'Select the kubeconfig file you want to import. Kite will not read ~/.kube/config automatically.',
                           })}
                         </p>
                       </div>
